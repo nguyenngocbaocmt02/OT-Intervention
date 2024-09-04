@@ -1,4 +1,4 @@
-name: iti
+name: oti
 channels:
   - pytorch
   - nvidia
@@ -304,7 +304,7 @@ dependencies:
     - tokenizers==0.15.0
     - toml==0.10.2
     - tqdm==4.64.1
-    - transformers==4.35.2
+    - transformers==4.44.2
     - git+https://github.com/sylinrl/TruthfulQA
     - types-pytz==2022.6.0.1
     - tzdata==2023.3

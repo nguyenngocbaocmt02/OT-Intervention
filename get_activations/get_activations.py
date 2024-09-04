@@ -1,17 +1,20 @@
 import os
+import pickle
+import sys
+
+import numpy as np
 import torch
 from datasets import load_dataset
 from tqdm import tqdm
-import numpy as np
-import pickle
-import sys
-sys.path.append('../')
-from utils import get_llama_activations_bau, tokenized_tqa, tokenized_tqa_gen, tokenized_tqa_gen_end_q
-import llama
-import pickle
-import argparse
-from transformers import AutoTokenizer, AutoModelForCausalLM
 
+sys.path.append('../')
+import argparse
+import pickle
+
+import llama
+from transformers import AutoModelForCausalLM, AutoTokenizer
+from utils import (get_gemma_activations, get_llama_activations_bau,
+                   tokenized_tqa, tokenized_tqa_gen, tokenized_tqa_gen_end_q)
 
 HF_NAMES = {
     # 'llama_7B': 'baffo32/decapoda-research-llama-7B-hf',
@@ -24,7 +27,8 @@ HF_NAMES = {
     'llama3_8B': 'meta-llama/Meta-Llama-3-8B',
     'llama3_8B_instruct': 'meta-llama/Meta-Llama-3-8B-Instruct',
     'llama3_70B': 'meta-llama/Meta-Llama-3-70B',
-    'llama3_70B_instruct': 'meta-llama/Meta-Llama-3-70B-Instruct'
+    'llama3_70B_instruct': 'meta-llama/Meta-Llama-3-70B-Instruct',
+    'gemma_2_2B': 'google/gemma-2-2b',
 }
 
 REPOS = {
@@ -52,16 +56,26 @@ def main():
     model_name_or_path = HF_NAMES[args.model_prefix + args.model_name]
 
     tokenizer = AutoTokenizer.from_pretrained(model_name_or_path)
-    model = AutoModelForCausalLM.from_pretrained(model_name_or_path, low_cpu_mem_usage=True, torch_dtype=torch.float16, device_map="auto")
+    if 'gemma' in model_name_or_path.lower():
+        model = AutoModelForCausalLM.from_pretrained(
+            model_name_or_path,
+            low_cpu_mem_usage=True,
+            torch_dtype=torch.float16,
+            device_map="auto",
+        )
+    else:
+        model = AutoModelForCausalLM.from_pretrained(
+            model_name_or_path, low_cpu_mem_usage=True, torch_dtype=torch.float16, device_map="auto")
+
     device = "cuda"
 
-    if args.dataset_name == "tqa_mc2": 
+    if args.dataset_name == "tqa_mc2":
         dataset = load_dataset(REPOS[args.train_dataset], "multiple_choice")['validation']
         formatter = tokenized_tqa
-    elif args.dataset_name == "tqa_gen": 
+    elif args.dataset_name == "tqa_gen":
         dataset = load_dataset(REPOS[args.train_dataset], 'generation')['validation']
         formatter = tokenized_tqa_gen
-    elif args.dataset_name == 'tqa_gen_end_q': 
+    elif args.dataset_name == 'tqa_gen_end_q':
         dataset = load_dataset(REPOS[args.train_dataset], 'generation')['validation']
         formatter = tokenized_tqa_gen_end_q
     else:
@@ -80,7 +94,13 @@ def main():
 
     print("Getting activations")
     for prompt in tqdm(prompts):
-        layer_wise_activations, head_wise_activations, _ = get_llama_activations_bau(model, prompt, device)
+        if 'gemma' in model_name_or_path.lower():
+            layer_wise_activations, head_wise_activations, _ = get_gemma_activations(
+                model, prompt, device)
+        else:
+            layer_wise_activations, head_wise_activations, _ = get_llama_activations_bau(
+                model, prompt, device)
+        
         all_layer_wise_activations.append(layer_wise_activations[:,-1,:].copy())
         all_head_wise_activations.append(head_wise_activations[:,-1,:].copy())
 

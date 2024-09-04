@@ -29,7 +29,7 @@ HF_NAMES = {
     'llama3_8B_instruct': 'meta-llama/Meta-Llama-3-8B-Instruct',
     'llama3_70B': 'meta-llama/Meta-Llama-3-70B',
     'llama3_70B_instruct': 'meta-llama/Meta-Llama-3-70B-Instruct',
-
+    'gemma_2_2B': 'google/gemma-2-2b',
     # HF edited models (ITI baked-in)
     'honest_llama_7B': 'jujipotle/honest_llama_7B', # Heads=48, alpha=15
     # 'honest_llama2_chat_7B': 'likenneth/honest_llama2_chat_7B', # Heads=?, alpha=?
@@ -152,7 +152,15 @@ def main():
     # create model
     model_name_or_path = HF_NAMES[args.model_prefix + args.model_name]
     tokenizer = AutoTokenizer.from_pretrained(model_name_or_path, trust_remote_code=True)
-    model = AutoModelForCausalLM.from_pretrained(model_name_or_path, low_cpu_mem_usage = True, torch_dtype=torch.float16, device_map="auto", trust_remote_code=True)
+    if 'gemma' in model_name_or_path.lower():
+        model = AutoModelForCausalLM.from_pretrained(
+            model_name_or_path,
+            low_cpu_mem_usage=True,
+            torch_dtype=torch.float16,
+            device_map="auto",
+        )
+    else:
+        model = AutoModelForCausalLM.from_pretrained(model_name_or_path, low_cpu_mem_usage = True, torch_dtype=torch.float16, device_map="auto", trust_remote_code=True)
     
     # define number of layers and heads
     num_layers = model.config.num_hidden_layers
