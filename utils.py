@@ -44,6 +44,7 @@ ENGINE_MAP = {
     'llama3_8B_instruct': 'meta-llama/Meta-Llama-3-8B-Instruct',
     'llama3_70B': 'meta-llama/Meta-Llama-3-70B',
     'llama3_70B_instruct': 'meta-llama/Meta-Llama-3-70B-Instruct',
+    'gemma_2_2B': 'google/gemma-2-2b',
 }
 
 from truthfulqa.evaluate import data_to_dict, format_frame
@@ -790,7 +791,7 @@ def is_pos_def(x):
 
 def solve(mu_hat, sigma_hat, theta, theta0, alpha=0.1, verbose=False):
     # Init
-    while is_pos_def(sigma_hat):
+    while not is_pos_def(sigma_hat):
         print("\n Sigma hat is not positive definite, adding diagonals to make it positive definite.\n")
         sigma_hat += 1e-4 * np.eye(sigma_hat.shape[0])
     sigma_hat_sqrt = sqrtm(sigma_hat)
@@ -854,14 +855,12 @@ def get_ot_interventions_dict(top_heads, probes, tuning_activations, tuning_labe
         sigma_act = empirical_covariance(activations)
         save_file_A = os.path.join(save_folder, f"model.layers.{layer}.{head}.self_attn.o_proj_A.npy")
         save_file_b = os.path.join(save_folder, f"model.layers.{layer}.{head}.self_attn.o_proj_b.npy")
-
         if os.path.exists(save_file_A) and os.path.exists(save_file_b):
             A_st = np.load(save_file_A)
             b_st = np.load(save_file_b)
         else:
             mu, S = solve(mean_act, sigma_act, theta, theta_0, alpha, verbose=True)
             sigma_st = S @ S
-
             A_st = compute_A_opt(sigma_act, sigma_st).astype(float)
             b_st = mu - (A_st @ mean_act).reshape(mu.shape)
             np.save(save_file_A, A_st)
