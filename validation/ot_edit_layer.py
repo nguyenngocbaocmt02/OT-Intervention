@@ -165,10 +165,6 @@ def main():
     # define number of layers and heads
     num_layers = model.config.num_hidden_layers
     num_heads = model.config.num_attention_heads
-    
-    # define number of layers and heads
-    num_layers = model.config.num_hidden_layers
-    num_heads = model.config.num_attention_heads
 
     # load activations 
     head_wise_activations = np.load(f"../features/{args.train_dataset}/{args.model_name}_{args.dataset_name}_head_wise.npy")
@@ -347,7 +343,6 @@ def main():
                         delta = A_to_add.half() @ head_output[head_mask, -1, head, :].reshape(b_to_add.shape) + b_to_add.half() - head_output[head_mask, -1, head, :].reshape(b_to_add.shape)
                         delta = delta.reshape(head_output[head_mask, -1, head, :].shape)
                         head_output[head_mask, -1, head, :] += args.kappa * delta * probs[i][head_mask]
-
                 else:
                     for loc in range(start_edit_location, head_output.shape[1]):
                         votes = []
