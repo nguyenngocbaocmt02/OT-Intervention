@@ -95,7 +95,7 @@ def main():
 
     parser.add_argument('--use_ot_intervention', action='store_true', help='use ot intervention', default=False)
     parser.add_argument('--alpha_ot', type=float, default=0.1, help='alpha, intervention strength')
-    parser.add_argument('--kappa_ot', type=float, default=20.0, help="balancing term for loss")
+    parser.add_argument('--kappa_ot', type=float, default=1.0, help="balancing term for loss")
 
     args = parser.parse_args()
 
@@ -196,15 +196,17 @@ def main():
                         head_output[:, start_edit_location:, head, :] += args.alpha * proj_val_std * direction_to_add
                 head_output = rearrange(head_output, 'b s h d -> b s (h d)')
                 return head_output
-
-        filename = f'{args.model_name}_train_{args.train_dataset}_seed_{args.seed}_top_{args.num_heads}_heads_alpha_{int(args.alpha)}_fold_{i}'
+        if args.use_ot_intervention:
+            filename = f'{args.model_name}_train_{args.train_dataset}_seed_{args.seed}_alpha_{int(args.alpha_ot)}_fold_{i}'
+        else:
+            filename = f'{args.model_name}_train_{args.train_dataset}_seed_{args.seed}_top_{args.num_heads}_heads_alpha_{int(args.alpha)}_fold_{i}'
 
         if args.use_center_of_mass:
             filename += '_com'
         if args.use_random_dir:
             filename += '_random'
         if args.use_ot_intervention:
-            filename += "_use_ot"
+            filename += f"_use_ot_{args.alpha_ot}"
         if args.train_dataset == args.eval_dataset:
             test_file = f'splits/{args.train_dataset}/fold_{i}_{args.use_mode}_seed_{args.seed}.csv'
         else:

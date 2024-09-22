@@ -768,35 +768,38 @@ def get_com_directions(num_layers, num_heads, train_set_idxs, val_set_idxs, sepa
 def is_pos_def(x):
     return np.all(np.linalg.eigvals(x) > 0)
 
-def solve(mu_hat, sigma_hat, theta, theta0, alpha=0.1, verbose=False):
+def solve(mu_hat, sigma_hat, mu_t, sigma_t, theta, theta0, ref_cov=None, mosek_params={}, alpha=0.1, verbose=False):
     # Init
     if not is_pos_def(sigma_hat):
-        breakpoint()
+        sigma_hat = sigma_hat + np.identity(sigma_hat.shape[0]) * 1e-5
     sigma_hat_sqrt = sqrtm(sigma_hat)
+    sigma_t_sqrt = sqrtm(sigma_t)
     d = sigma_hat.shape[0]
 
     # Variables
     mu = cp.Variable((d, 1))
     S = cp.Variable((d, d), PSD=True)
-    t = cp.Variable((1, 1))
-
-    # Constraints
+    # t = cp.Variable((1, 1))
+    t = cp.Variable()
     constraints = []
-
+    # Constraints
     # \theta_0 + \theta^\top \mu + \Phi^{-1}(1-\alpha) t \le 0
-    constraints += [theta0 + cp.transpose(theta) @ mu + norm.ppf(1 - alpha) * t <= 0]
+
+    constraints += [theta0 + cp.transpose(theta) @ mu + alpha * t <= 0]
+    if ref_cov is not None:
+        constraints += [S  - sqrtm(ref_cov) >> 0]
 
     # [[tI, S \theta] [\theta^\top S, t]] >> 0
-    constraints += [cp.bmat([[t * np.eye(d), S @ theta], [cp.transpose(theta) @ S, t]]) >> 0]
-
+    #constraints += [cp.bmat([[t * np.eye(d), S @ theta], [cp.transpose(theta) @ S, t]]) >> 0]
+    constraints += [cp.SOC(t, S @ theta)]
     # \mu \in \R^d, S \in \PSD^d, t \in \R_+
     constraints += [t >= 0]
 
     # Objective and solve
     objective = cp.Minimize(cp.norm(mu - mu_hat[..., np.newaxis]) ** 2 + cp.norm(S - sigma_hat_sqrt, "fro") ** 2)
     p = cp.Problem(objective, constraints)
-
-    result = p.solve(solver=cp.MOSEK, verbose=verbose)
+    print(t.value)
+    result = p.solve(solver=cp.MOSEK, mosek_params=mosek_params, verbose=verbose)
     # Results
     if p.status not in ["infeasible", "unbounded"]:
         return mu.value, S.value
@@ -809,99 +812,99 @@ def compute_A_opt(covsa, cov_opt):
     A_opt = covsa_inv_sqrt @ intermediate_sqrt @ covsa_inv_sqrt
     return A_opt
 
-def get_ot_interventions_dict(top_heads, probes, tuning_activations, tuning_labels, best_th, num_heads, save_folder, alpha): 
+def get_ot_interventions_dict(top_heads, probes, tuning_activations, tuning_labels, ref_activations, best_th, num_heads, save_folder, alpha, kappa=1.0): 
     interventions = {}
     if not os.path.exists(save_folder):
         os.makedirs(save_folder)
         print(f"Created directory: {save_folder}")
     for layer, head in top_heads: 
         interventions[f"model.layers.{layer}.self_attn.o_proj"] = []
-    for layer, head in top_heads:
-        try:
-            theta = probes[layer_head_to_flattened_idx(layer, head, num_heads)].coef_.squeeze().reshape(-1, 1)
-            theta_0 = probes[layer_head_to_flattened_idx(layer, head, num_heads)].intercept_.squeeze()
-            probabilities = probes[layer_head_to_flattened_idx(layer, head, num_heads)].predict_proba(tuning_activations[:, layer, head, :])[:, 1]
-            predicted_labels = (probabilities > 0.5).astype(int)
-        except:
-            theta = probes[layer_head_to_flattened_idx(layer, head, num_heads)].linear.weight.detach().numpy().squeeze().reshape(-1, 1)
-            theta_0 = probes[layer_head_to_flattened_idx(layer, head, num_heads)].linear.bias.detach().numpy().squeeze()
-            predicted_labels = ((probes[layer_head_to_flattened_idx(layer, head, num_heads)](tuning_activations[:, layer, head, :])) > 0.5).squeeze()
-
-        activations = np.array(tuning_activations[predicted_labels, layer, head, :])
-        #activations = np.array(tuning_activations[tuning_labels == 1, layer, head, :])
-        mean_act = np.mean(activations, 0)
-        sigma_act = empirical_covariance(activations)
-        save_file_A = os.path.join(save_folder, f"model.layers.{layer}.{head}.self_attn.o_proj_A.npy")
-        save_file_b = os.path.join(save_folder, f"model.layers.{layer}.{head}.self_attn.o_proj_b.npy")
-
-        if os.path.exists(save_file_A) and os.path.exists(save_file_b):
-            A_st = np.load(save_file_A)
-            b_st = np.load(save_file_b)
-        else:
-            mu, S = solve(mean_act, sigma_act, theta, theta_0, alpha, verbose=True)
-            sigma_st = S @ S
-
-            A_st = compute_A_opt(sigma_act, sigma_st).astype(float)
-            b_st = mu - (A_st @ mean_act).reshape(mu.shape)
-            np.save(save_file_A, A_st)
-            np.save(save_file_b, b_st)
-        interventions[f"model.layers.{layer}.self_attn.o_proj"].append((head, A_st, b_st, probes[layer_head_to_flattened_idx(layer, head, num_heads)], best_th))
-
-    for layer, head in top_heads: 
-        interventions[f"model.layers.{layer}.self_attn.o_proj"] = sorted(interventions[f"model.layers.{layer}.self_attn.o_proj"], key = lambda x: x[0])
-
     # Analysis
     try:
-        analysis_file = os.path.join(save_folder, "check.csv")
+        analysis_file = os.path.join(save_folder, f"check_{alpha}_{kappa}.csv")
         with open(analysis_file, mode="w") as file:
             writer = csv.writer(file)
-            writer.writerow(['Layer', 'Head', 'u_to_d_clf', 'overall_acc', 'acc', 'tpr', 'tnr', 'fpr', 'fnr'])
-            for layer, head in top_heads:
-                for tmp in interventions[f"model.layers.{layer}.self_attn.o_proj"]:
-                    if tmp[0] == head:
-                        inv_info = tmp
-                        break
-                classifier = inv_info[3]
-                check = tuning_activations[:, layer, head, :]
-                check_labels = (classifier((tuning_activations[:, layer, head, :])) > 0.5).squeeze().int()
-                uac = check[check_labels == 1]
-                uac_labels = check_labels[check_labels == 1]
-                uac_true_labels = tuning_labels[check_labels == 1]
-                dac = check[check_labels == 0]
-                dac_labels = check_labels[check_labels == 0]
-                dac_true_labels = tuning_labels[check_labels == 0]
-                true_labels = torch.concat([uac_true_labels, dac_true_labels])
-                pre_labels = torch.concat([uac_labels, dac_labels])
+            writer.writerow(['Layer', 'Head', 'accuracy', 'u_to_d_clf', 'du_to_d_clf', "uu_to_d_clf"])
+        for layer, head in top_heads:
+            try:
+                theta = probes[layer_head_to_flattened_idx(layer, head, num_heads)].coef_.squeeze().reshape(-1, 1)
+                theta_0 = probes[layer_head_to_flattened_idx(layer, head, num_heads)].intercept_.squeeze()
+                probabilities = probes[layer_head_to_flattened_idx(layer, head, num_heads)].predict_proba(tuning_activations[:, layer, head, :])[:, 1]
+                predicted_labels = (probabilities > 0.5).astype(int)
+            except:
+                theta = probes[layer_head_to_flattened_idx(layer, head, num_heads)].linear.weight.detach().numpy().squeeze().reshape(-1, 1)
+                theta_0 = probes[layer_head_to_flattened_idx(layer, head, num_heads)].linear.bias.detach().numpy().squeeze()
+                predicted_labels = ((probes[layer_head_to_flattened_idx(layer, head, num_heads)](tuning_activations[:, layer, head, :])) > 0.5).squeeze()
 
-                A_st = torch.tensor(inv_info[1]).float()
-                b_st = torch.tensor(inv_info[2]).float()
+            activations = np.array(tuning_activations[predicted_labels, layer, head, :])
+            mean_act = np.mean(activations, 0)
+            sigma_act = empirical_covariance(activations)
+            ref_cov = empirical_covariance(np.array(tuning_activations[tuning_labels == 0, layer, head, :]))
 
-                trans_uac = (A_st @ uac.T + b_st).T
-                trans_uac_labels = (classifier(trans_uac) > 0.5).squeeze().int()
-                later_labels = torch.concat([trans_uac_labels, dac_labels])
-                
-                u_to_d_clf = torch.sum(trans_uac_labels == 0) / len(trans_uac_labels)
-                
-                overall_acc_before = torch.sum(pre_labels == true_labels) / len(true_labels)
-                overall_acc_after = torch.sum(later_labels == true_labels) / len(true_labels)
-                
-                acc_before = torch.sum(uac_labels == uac_true_labels) / len(uac_true_labels)
-                acc_after = torch.sum(trans_uac_labels == uac_true_labels) / len(uac_true_labels)
-                pre_TP = torch.sum((uac_labels == 1) & (uac_true_labels == 1)).item() 
-                pre_TN = torch.sum((uac_labels == 0) & (uac_true_labels == 0)).item()
-                pre_FP = torch.sum((uac_labels == 1) & (uac_true_labels == 0)).item() 
-                pre_FN = torch.sum((uac_labels == 0) & (uac_true_labels == 1)).item()
-                aft_TP = torch.sum((trans_uac_labels == 1) & (uac_true_labels == 1)).item() 
-                aft_TN = torch.sum((trans_uac_labels == 0) & (uac_true_labels == 0)).item()
-                aft_FP = torch.sum((trans_uac_labels == 1) & (uac_true_labels == 0)).item()
-                aft_FN = torch.sum((trans_uac_labels == 0) & (uac_true_labels == 1)).item() 
-                writer.writerow([layer, head, 0, overall_acc_before, acc_before, pre_TP, pre_TN, pre_FP, pre_FN])
-                writer.writerow([layer, head, u_to_d_clf, overall_acc_after, acc_after, aft_TP, aft_TN, aft_FP, aft_FN])
+            # undesired_activations = np.array(tuning_activations[tuning_labels == 1, layer, head, :])
+            # mean_undesired_activations = np.mean(undesired_activations, 0)
+
+            desired_activations = np.array(tuning_activations[tuning_labels == 0, layer, head, :])
+            mean_desired_activations = np.mean(desired_activations, 0)
+            sigma_desired_activations = empirical_covariance(np.array(tuning_activations[tuning_labels == 0, layer, head, :]))
+
+            # np.linalg.norm(mean_act -  mean_undesired_activations)
+            # mean_act.T @ theta + theta_0
+            # theta.T @ mu + theta_0
+            # (mean_desired_activations -  mean_act) @ theta 
+            save_file_A = os.path.join(save_folder, f"model.layers.{layer}.{head}.self_attn.o_proj_A.npy")
+            save_file_b = os.path.join(save_folder, f"model.layers.{layer}.{head}.self_attn.o_proj_b.npy")
+            try:
+                A_st = np.load(save_file_A)
+                b_st = np.load(save_file_b)
+            except:
+                if os.path.exists(save_file_A):
+                    os.remove(save_file_A)
+                if os.path.exists(save_file_b):
+                    os.remove(save_file_b)
+                mosek_params = {}
+                mu, S = solve(mean_act, sigma_act, mean_desired_activations, sigma_desired_activations, theta, theta_0, ref_cov=ref_cov,alpha=alpha, mosek_params=mosek_params, verbose=True)
+                sigma_st = S @ S
+                A_st = compute_A_opt(sigma_act, sigma_st).astype(float)
+                b_st = mu - (A_st @ mean_act).reshape(mu.shape)
+                np.save(save_file_A, A_st)
+                np.save(save_file_b, b_st)
+            interventions[f"model.layers.{layer}.self_attn.o_proj"].append((head, A_st, b_st, probes[layer_head_to_flattened_idx(layer, head, num_heads)], best_th))
+            
+            classifier = probes[layer_head_to_flattened_idx(layer, head, num_heads)]
+            check = tuning_activations[:, layer, head, :]
+            check_labels = (classifier((tuning_activations[:, layer, head, :])) > 0.5).squeeze().int()
+            uac = check[check_labels == 1]
+            uac_labels = check_labels[check_labels == 1]
+            uac_true_labels = tuning_labels[check_labels == 1]
+            dac = check[check_labels == 0]
+            dac_labels = check_labels[check_labels == 0]
+            dac_true_labels = tuning_labels[check_labels == 0]
+            true_labels = torch.concat([uac_true_labels, dac_true_labels])
+            pre_labels = torch.concat([uac_labels, dac_labels])
+
+            A_st = torch.tensor(A_st).float()
+            b_st = torch.tensor(b_st).float()
+
+            trans_uac = (A_st @ uac.T + b_st).T
+            trans_uac = (trans_uac - uac) * kappa + uac
+            trans_uac_labels = (classifier(trans_uac) > 0.5).squeeze().int()
+            later_labels = torch.concat([trans_uac_labels, dac_labels])
+            
+            acc = torch.sum(check_labels == tuning_labels) / (len(tuning_labels))
+            u_to_d_clf = torch.sum(trans_uac_labels == 0) / len(trans_uac_labels)
+            du_to_d_clf = torch.sum((trans_uac_labels == 0) & (uac_true_labels == 0)) / torch.sum(uac_true_labels == 0)
+            uu_to_d_clf = torch.sum((trans_uac_labels == 0) & (uac_true_labels == 1)) / torch.sum(uac_true_labels == 1)
+            
+            with open(analysis_file, 'a') as file:
+                writer = csv.writer(file)
+                writer.writerow([layer, head, acc, u_to_d_clf, du_to_d_clf, uu_to_d_clf])
                 writer.writerow([])
     except Exception as e:
         import pdb
         import traceback
         traceback.print_exc()
         pdb.post_mortem()
-    breakpoint()
+    for layer, head in top_heads: 
+        interventions[f"model.layers.{layer}.self_attn.o_proj"] = sorted(interventions[f"model.layers.{layer}.self_attn.o_proj"], key = lambda x: x[0])
     return interventions

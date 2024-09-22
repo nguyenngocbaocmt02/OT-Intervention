@@ -109,7 +109,6 @@ def kl_divergence_loss(y_pred, y_true):
 def main(): 
     parser = argparse.ArgumentParser()
     parser.add_argument("--model_name", type=str, default='llama_7B', choices=HF_NAMES.keys(), help='model name')
-    parser.add_argument('--model_prefix', type=str, default='', help='prefix to model name')
     parser.add_argument('--exp', type=str, default='', help='exp')
     parser.add_argument('--dataset_name', type=str, default='tqa_mc2', help='feature bank for training probes')
     parser.add_argument("--num_fold", type=int, default=2, help="number of folds")
@@ -120,13 +119,13 @@ def main():
     parser.add_argument('--info_name', type=str, required=False)
     parser.add_argument('--eval_dataset', type=str, default='truthful_qa', help='Dataset used for evaluating model')
     parser.add_argument('--train_dataset', type=str, default='truthful_qa', help='Dataset used for training')
-    parser.add_argument('--alpha', type=float, default=0.1, help='alpha, intervention threshold')
+    parser.add_argument('--alpha', type=float, default=30, help='alpha, intervention threshold')
     parser.add_argument('--loss_type', type=str, default="fpr_fnr", help="loss for probing")
     parser.add_argument('--bl', type=float, default=1.0, help="balancing term for loss")
-    parser.add_argument('--criterion', type=str, default="val_loss", help="choose editted layer")
-    parser.add_argument('--kappa', type=float, default=20.0, help="balancing term for loss")
     parser.add_argument('--use_mode', type=str, default="test", help="parameter selection or test")
     parser.add_argument('--instruction_prompt', default="default",type=str, required=False)
+    parser.add_argument('--clf_folder', default="./clf",type=str, required=False)
+    parser.add_argument('--clf_only', default=0,type=int)
 
     parser.add_argument('--use_iti', action='store_true', help='use iti to select intervened heads', default=False)
     parser.add_argument('--activations_dataset', type=str, default="tqa_gen_end_q", help='feature bank for calculating std along direction')
@@ -150,7 +149,7 @@ def main():
     fold_idxs = np.array_split(np.arange(len(df)), args.num_fold)
 
     # create model
-    model_name_or_path = HF_NAMES[args.model_prefix + args.model_name]
+    model_name_or_path = HF_NAMES[args.model_name]
     tokenizer = AutoTokenizer.from_pretrained(model_name_or_path, trust_remote_code=True)
     model = AutoModelForCausalLM.from_pretrained(model_name_or_path, low_cpu_mem_usage = True, torch_dtype=torch.float16, device_map="auto", trust_remote_code=True)
     
@@ -174,7 +173,6 @@ def main():
     tuning_labels = np.load(f"../features/{args.train_dataset}/{args.model_name}_{activations_dataset}_labels.npy")
 
     separated_head_wise_activations, separated_labels, idxs_to_split_at = get_separated_activations(labels, head_wise_activations)
-    separated_tuning_head_wise_activations, separated_tuning_labels, idxs_to_split_at = get_separated_activations(labels, head_wise_activations)
 
     if args.loss_type == "fpr_fnr":
         loss_func = lambda y_pred, y_true: smooth_fpr_fnr_loss(y_pred, y_true, bl=args.bl)
@@ -214,20 +212,15 @@ def main():
         y_train = 1 - np.concatenate([separated_labels[i] for i in train_set_idxs], axis = 0)
         y_val = 1 - np.concatenate([separated_labels[i] for i in val_set_idxs], axis = 0)
 
-        all_X_train_tuning = np.concatenate([separated_tuning_head_wise_activations[i] for i in train_set_idxs], axis = 0)
-        y_train_tuning = 1 - np.concatenate([separated_tuning_labels[i] for i in train_set_idxs], axis = 0)
-
-        metrics = np.load(f"info_probs/{args.train_dataset}/{fold}_{args.model_name}_{args.dataset_name}_{args.loss_type}_{args.criterion}_{args.bl}.npy")
-        target_layer = np.argmin(metrics) 
-
         top_heads, probes = [], []
-        layer_idx = target_layer
-        val_votes = []
+        
+        val_loss_logs = []
+        vote_logs = []
         for layer_idx in range(num_layers):
+            val_votes = []
             for head_idx in range(num_heads):
-                if layer_idx != target_layer:
-                    probes.append(None)
-                    continue
+                save_path_clf = f"{args.clf_folder}/{args.train_dataset}/seed_{args.seed}_fold_{fold}_{args.model_name}_dataset_{args.dataset_name}_loss_type_{args.loss_type}_bl_{args.bl}_layer_{layer_idx}_head_{head_idx}.pth"
+            
                 X_train = all_X_train[:,layer_idx,head_idx,:]
                 X_val = all_X_val[:,layer_idx,head_idx,:]
                 X_train = X_train.reshape(X_train.shape[0], -1)
@@ -243,46 +236,49 @@ def main():
                 best_loss = float("inf")
                 best_model_state = None
 
-                epochs = 1000
-                for epoch in range(epochs):
-                    clf.train()
-                    optimizer.zero_grad()
-                    outputs = clf(X_train_tensor)
-                    loss = loss_func(outputs.squeeze(), y_train_tensor)
-                    loss.backward()
-                    optimizer.step()
+                try:
+                    clf.load_state_dict(torch.load(save_path_clf))
+                except:
+                    if os.path.exists(save_path_clf):
+                        os.remove(save_path_clf)
+                    for epoch in range(1000):
+                        clf.train()
+                        optimizer.zero_grad()
+                        outputs = clf(X_train_tensor)
+                        loss = loss_func(outputs.squeeze(), y_train_tensor)
+                        loss.backward()
+                        optimizer.step()
 
-                    with torch.no_grad():
-                        clf.eval()
-                        val_outputs = clf(X_val_tensor)
-                        predicted_labels = (val_outputs.squeeze() > 0.5).float()
-                        val_loss = rloss_func(predicted_labels, y_val_tensor)
-                        if val_loss < best_loss:
-                            best_loss = val_loss
-                            best_model_state = clf.state_dict()
-
-                if best_model_state is not None:
-                    clf.load_state_dict(best_model_state)
+                        with torch.no_grad():
+                            clf.eval()
+                            val_outputs = clf(X_val_tensor)
+                            predicted_labels = (val_outputs.squeeze() > 0.5).float()
+                            val_loss = rloss_func(predicted_labels, y_val_tensor)
+                            if val_loss < best_loss:
+                                best_loss = val_loss
+                                best_model_state = clf.state_dict()
+                    if best_model_state is not None:
+                        clf.load_state_dict(best_model_state)
+                    if not os.path.exists(os.path.dirname(save_path_clf)):
+                        os.makedirs(os.path.dirname(save_path_clf))
+                    torch.save(clf.state_dict(), save_path_clf)
                 clf.eval()
                 probes.append(clf)
-                top_heads.append((layer_idx, head_idx))
                 val_outputs = clf(X_val_tensor)
-                predicted_labels = (val_outputs.squeeze() > 0.5).float()
                 val_votes.append((val_outputs.squeeze() > 0.5).float())
-            
-            if layer_idx != target_layer:
-                continue
-            # How to choose the voting threshold
             no_votes = len(val_votes)
             best_th = 0
             best_loss = float("inf")
-            for threshold in range(0, no_votes):
+            best_acc = 0
+            for threshold in range(0, int(no_votes / 2)):
                 predicted_labels = (torch.mean(torch.stack(val_votes), axis=0).squeeze() >= threshold * 1.0 / no_votes).float()
                 val_loss = rloss_func(predicted_labels, y_val_tensor)
-                if val_loss < best_loss:
+                acc = torch.sum((predicted_labels == y_val_tensor)).item() / len(y_val_tensor)
+                FNR = torch.sum((predicted_labels == 0) & (y_val_tensor == 1)).item() / torch.sum(y_val_tensor == 1)
+                if val_loss < best_loss and FNR == 0 and acc > best_acc:
                     best_th = threshold
                     best_loss = val_loss
-
+                    best_acc = acc
             predicted_labels = (torch.mean(torch.stack(val_votes), axis=0).squeeze() >= best_th * 1.0 / no_votes).float()
             accuracy = torch.sum((predicted_labels == y_val_tensor)).item() / len(y_val_tensor)
             TP = torch.sum((predicted_labels == 1) & (y_val_tensor == 1)).item() 
@@ -292,14 +288,22 @@ def main():
             FPR = torch.sum((predicted_labels == 1) & (y_val_tensor == 0)).item() / torch.sum(y_val_tensor == 0)
             FNR = torch.sum((predicted_labels == 0) & (y_val_tensor == 1)).item() / torch.sum(y_val_tensor == 1)
             val_loss =  rloss_func(predicted_labels, y_val_tensor)
+            val_loss_logs.append(val_loss)
+            vote_logs.append(best_th)
             F1 = 2 * TP / (2 * TP + FN + FP)
-            print(f"Layer {layer_idx}: Threshold: {best_th},Acc:{accuracy}, F1={F1}, TP: {TP}, TN: {TN}, FP: {FP}, FN: {FN}, FPR: {FPR}, FNR: {FNR}, VAL_LOSS: {val_loss}")
-
-        print("Heads intervened: ", sorted(top_heads))
-        save_folder = f'{args.exp}_ot_save/{args.train_dataset}/{args.model_name}_seed_{args.seed}_alpha_{args.alpha}_fold_{fold}_loss_type_{args.loss_type}_criterion_{args.criterion}_bl_{args.bl}'
-        used_activations = torch.tensor(np.concatenate([separated_tuning_head_wise_activations[i] for i in train_set_idxs], axis = 0), dtype=torch.float32)
-        used_labels = torch.tensor(y_train_tuning, dtype=torch.float32) 
-        interventions = get_ot_interventions_dict(top_heads, probes, used_activations, used_labels, best_th, num_heads, save_folder, alpha=args.alpha)
+            print(f"Layer {layer_idx}: Threshold: {best_th},Acc:{accuracy}, F1={F1}, FPR: {FPR}, FNR: {FNR}, VAL_LOSS: {val_loss}")
+        
+        target_layer = np.argmin(val_loss_logs)
+        best_th = vote_logs[target_layer]
+        for head in range(num_heads):
+            top_heads.append((target_layer, head))
+        print(f"Threshold: {best_th}, Heads intervened: ", sorted(top_heads))
+        if args.clf_only == 1:
+            continue
+        save_folder = f'{args.exp}_ot_save/{args.train_dataset}/{args.model_name}_seed_{args.seed}_alpha_{args.alpha}_fold_{fold}_loss_type_{args.loss_type}_bl_{args.bl}'
+        used_activations = torch.tensor(np.concatenate([separated_head_wise_activations[i] for i in train_set_idxs], axis = 0), dtype=torch.float32)
+        used_labels = torch.tensor(y_train, dtype=torch.float32) 
+        interventions = get_ot_interventions_dict(top_heads, probes, used_activations, used_labels, tuning_activations, best_th, num_heads, save_folder, alpha=args.alpha)
         
         if args.use_iti:
             com_directions = get_com_directions(num_layers, num_heads, train_set_idxs, val_set_idxs, separated_head_wise_activations, separated_labels)
@@ -327,18 +331,19 @@ def main():
                         inputs = head_output[:, -1, head, :]
                         prob = clf(inputs.to(clf.linear.weight.dtype))
                         probs.append(prob)
-                        votes.append((prob.squeeze() > 0.5).float())
-                    votes = torch.stack(votes, dim=0)
-                    mask = (torch.sum(votes, axis=0, keepdim=True) >= threshold)
+                        votes.append((prob > 0.5).float())
+                    probs = torch.cat(probs, dim=1)
+                    votes = torch.cat(votes, dim=1)
+                    mask = (torch.sum(votes, axis=1, keepdim=True) >= threshold)
                     for i, (head, A, b, clf, th) in enumerate(interventions[layer_name]):
                         A_to_add = torch.tensor(A).to(head_output.device.index)
                         b_to_add = torch.tensor(b).to(head_output.device.index)
-                        head_mask = mask.bool() & votes[[i]].bool()
-                        if torch.sum(head_mask.float()) == 0:
+                        head_mask = ((mask.bool() & votes[:, [i]].bool())).reshape((-1)).bool()
+                        if torch.sum(head_mask).item() == 0:
                             continue
-                        delta = A_to_add.half() @ head_output[head_mask, -1, head, :].reshape(b_to_add.shape) + b_to_add.half() - head_output[head_mask, -1, head, :].reshape(b_to_add.shape)
+                        delta = A_to_add.half() @ head_output[head_mask, -1, head, :].T + b_to_add.half() - head_output[head_mask, -1, head, :].T
                         delta = delta.reshape(head_output[head_mask, -1, head, :].shape)
-                        head_output[head_mask, -1, head, :] += args.kappa * delta * probs[i][head_mask]
+                        head_output[head_mask, -1, head, :] += delta
 
                 else:
                     for loc in range(start_edit_location, head_output.shape[1]):
@@ -350,24 +355,25 @@ def main():
                             inputs = head_output[:, loc, head, :]
                             prob = clf(inputs.to(clf.linear.weight.dtype))
                             probs.append(prob)
-                            votes.append((prob.squeeze() > 0.5).float())
-                        votes = torch.stack(votes, dim=0)
-                        mask = (torch.sum(votes, axis=0, keepdim=True) >= threshold)
+                            votes.append((prob > 0.5).float())
+                        probs = torch.cat(probs, dim=1)
+                        votes = torch.cat(votes, dim=1)
+                        mask = (torch.sum(votes, axis=1, keepdim=True) >= threshold)
                         for i, (head, A, b, clf, th) in enumerate(interventions[layer_name]):
                             A_to_add = torch.tensor(A).to(head_output.device.index)
                             b_to_add = torch.tensor(b).to(head_output.device.index)
-                            head_mask = mask.bool() & votes[[i]].bool()
-                            if torch.sum(head_mask.float()) == 0:
+                            head_mask = ((mask.bool() & votes[:, [i]].bool())).reshape((-1)).bool()
+                            if torch.sum(head_mask).item() == 0:
                                 continue
-                            delta = A_to_add.half() @ head_output[head_mask, loc, head, :].reshape(b_to_add.shape) + b_to_add.half() - head_output[head_mask, loc, head, :].reshape(b_to_add.shape)
+                            delta = A_to_add.half() @ head_output[head_mask, loc, head, :].T + b_to_add.half() - head_output[head_mask, loc, head, :].T
                             delta = delta.reshape(head_output[head_mask, loc, head, :].shape)
-                            head_output[head_mask, loc, head, :] += args.kappa * delta * probs[i][head_mask]
+                            head_output[head_mask, loc, head, :] += delta
     
                 head_output = rearrange(head_output, 'b s h d -> b s (h d)')
                 return head_output
             
         
-        filename = f'{args.model_name}_train_{args.train_dataset}_seed_{args.seed}_alpha_{args.alpha}_fold_{fold}_loss_type_{args.loss_type}_criterion_{args.criterion}_bl_{args.bl}_kappa_{args.kappa}_use_iti_{args.use_iti}'
+        filename = f'{args.model_name}_train_{args.train_dataset}_seed_{args.seed}_alpha_{args.alpha}_fold_{fold}_loss_type_{args.loss_type}_bl_{args.bl}_use_iti_{args.use_iti}'
         if args.train_dataset == args.eval_dataset:
             test_file = f'splits/{args.train_dataset}/fold_{fold}_{args.use_mode}_seed_{args.seed}.csv'
         else:
@@ -381,6 +387,7 @@ def main():
         curr_fold_results = alt_tqa_evaluate(
             models={args.model_name: model},
             metric_names=['judge', 'info', 'mc'],
+            #metric_names=['mc'],
             input_path=test_file,
             output_path=output_path,
             summary_path=summary_path,
@@ -397,10 +404,9 @@ def main():
 
         curr_fold_results = curr_fold_results.to_numpy()[0].astype(float)
         results.append(curr_fold_results)
-
     results = np.array(results)
     final = results.mean(axis=0)
-    print(f'alpha: {args.alpha}, heads: {args.num_heads}, True*Info Score: {final[1]*final[0]}, True Score: {final[1]}, Info Score: {final[0]}, MC1 Score: {final[2]}, MC2 Score: {final[3]}, CE Loss: {final[4]}, KL wrt Original: {final[5]}')
+    #print(f'alpha: {args.alpha}, True*Info Score: {final[1]*final[0]}, True Score: {final[1]}, Info Score: {final[0]}, MC1 Score: {final[2]}, MC2 Score: {final[3]}, CE Loss: {final[4]}, KL wrt Original: {final[5]}')
 
 if __name__ == "__main__":
     main()
