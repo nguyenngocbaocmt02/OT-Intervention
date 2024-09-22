@@ -1,34 +1,36 @@
 import os
 import sys
+
 sys.path.insert(0, "TruthfulQA")
 
+import csv
+import pickle
+import warnings
+from functools import partial
+
+import cvxpy as cp
+import numpy as np
+import openai
+import pandas as pd
+import sklearn
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import llama
-from datasets import load_dataset
-from tqdm import tqdm
-import numpy as np
-import llama
-import csv
-import pandas as pd
-import warnings
-from einops import rearrange
-from transformers import AutoTokenizer, AutoModelForCausalLM
 from baukit import Trace, TraceDict
-import sklearn
-from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_score
-from sklearn.linear_model import LogisticRegression
-import pickle
-from functools import partial
-import numpy as np
-import cvxpy as cp
+from datasets import load_dataset
+from einops import rearrange
+from scipy.linalg import inv, sqrtm
 from scipy.stats import norm
 from sklearn.covariance import empirical_covariance
-from scipy.linalg import sqrtm, inv
-from truthfulqa import utilities, models, metrics
-import openai
-from truthfulqa.configs import BEST_COL, ANSWER_COL, INCORRECT_COL
+from sklearn.linear_model import LogisticRegression
+from sklearn.metrics import (accuracy_score, f1_score, precision_score,
+                             recall_score)
+from tqdm import tqdm
+from transformers import AutoModelForCausalLM, AutoTokenizer
+from truthfulqa import metrics, models, utilities
+from truthfulqa.configs import ANSWER_COL, BEST_COL, INCORRECT_COL
+
+import llama
 
 ENGINE_MAP = {
     # 'llama_7B': 'baffo32/decapoda-research-llama-7B-hf',
@@ -42,18 +44,15 @@ ENGINE_MAP = {
     'llama3_8B_instruct': 'meta-llama/Meta-Llama-3-8B-Instruct',
     'llama3_70B': 'meta-llama/Meta-Llama-3-70B',
     'llama3_70B_instruct': 'meta-llama/Meta-Llama-3-70B-Instruct',
+    'gemma_2_2B': 'google/gemma-2-2b',
 }
 
-from truthfulqa.utilities import (
-    format_prompt,
-    format_prompt_with_answer_strings,
-    split_multi_answer,
-    format_best,
-    find_start,
-)
-from truthfulqa.presets import preset_map, COMPARE_PRIMER
-from truthfulqa.models import find_subsequence, set_columns, MC_calcs
-from truthfulqa.evaluate import format_frame, data_to_dict
+from truthfulqa.evaluate import data_to_dict, format_frame
+from truthfulqa.models import MC_calcs, find_subsequence, set_columns
+from truthfulqa.presets import COMPARE_PRIMER, preset_map
+from truthfulqa.utilities import (find_start, format_best, format_prompt,
+                                  format_prompt_with_answer_strings,
+                                  split_multi_answer)
 
 
 def load_nq():
@@ -184,6 +183,28 @@ def get_llama_logits(model, prompt, device):
         logits = model(prompt).logits
         logits = logits.detach().cpu()
         return logits
+
+
+def get_gemma_activations(model, prompt, device): 
+
+    HEADS = [f"model.layers.{i}.self_attn.o_proj" for i in range(model.config.num_hidden_layers)]
+    MLPS = [f"model.layers.{i}.mlp" for i in range(model.config.num_hidden_layers)]
+
+    with torch.no_grad():
+        prompt = prompt.to(device)
+        with TraceDict(model, HEADS+MLPS) as ret:
+            output = model(prompt, output_hidden_states = True)
+        hidden_states = output.hidden_states
+        hidden_states = torch.stack(hidden_states, dim = 0).squeeze()
+        hidden_states = hidden_states.detach().cpu().numpy()
+        # pdb.set_trace()
+        head_wise_hidden_states = [ret[head].output[0].squeeze().detach().cpu() for head in HEADS]
+        head_wise_hidden_states = torch.stack(head_wise_hidden_states, dim = 0).squeeze().numpy()
+        mlp_wise_hidden_states = [ret[mlp].output.squeeze().detach().cpu() for mlp in MLPS]
+        mlp_wise_hidden_states = torch.stack(mlp_wise_hidden_states, dim = 0).squeeze().numpy()
+
+    return hidden_states, head_wise_hidden_states, mlp_wise_hidden_states
+
 
 def save_probes(probes, path): 
     """takes in a list of sklearn lr probes and saves them to path"""
@@ -770,8 +791,14 @@ def is_pos_def(x):
 
 def solve(mu_hat, sigma_hat, mu_t, sigma_t, theta, theta0, ref_cov=None, mosek_params={}, alpha=0.1, verbose=False):
     # Init
+<<<<<<< HEAD
     if not is_pos_def(sigma_hat):
         sigma_hat = sigma_hat + np.identity(sigma_hat.shape[0]) * 1e-5
+=======
+    while not is_pos_def(sigma_hat):
+        print("\n Sigma hat is not positive definite, adding diagonals to make it positive definite.\n")
+        sigma_hat += 1e-4 * np.eye(sigma_hat.shape[0])
+>>>>>>> c0d3f0ed2a3921e755cd323ef2cb7b1b4650c406
     sigma_hat_sqrt = sqrtm(sigma_hat)
     sigma_t_sqrt = sqrtm(sigma_t)
     d = sigma_hat.shape[0]
@@ -819,6 +846,41 @@ def get_ot_interventions_dict(top_heads, probes, tuning_activations, tuning_labe
         print(f"Created directory: {save_folder}")
     for layer, head in top_heads: 
         interventions[f"model.layers.{layer}.self_attn.o_proj"] = []
+<<<<<<< HEAD
+=======
+    for layer, head in top_heads:
+        try:
+            theta = probes[layer_head_to_flattened_idx(layer, head, num_heads)].coef_.squeeze().reshape(-1, 1)
+            theta_0 = probes[layer_head_to_flattened_idx(layer, head, num_heads)].intercept_.squeeze()
+            probabilities = probes[layer_head_to_flattened_idx(layer, head, num_heads)].predict_proba(tuning_activations[:, layer, head, :])[:, 1]
+            predicted_labels = (probabilities > 0.5).astype(int)
+        except:
+            theta = probes[layer_head_to_flattened_idx(layer, head, num_heads)].linear.weight.detach().numpy().squeeze().reshape(-1, 1)
+            theta_0 = probes[layer_head_to_flattened_idx(layer, head, num_heads)].linear.bias.detach().numpy().squeeze()
+            predicted_labels = ((probes[layer_head_to_flattened_idx(layer, head, num_heads)](tuning_activations[:, layer, head, :])) > 0.5).squeeze()
+
+        activations = np.array(tuning_activations[predicted_labels, layer, head, :])
+        #activations = np.array(tuning_activations[tuning_labels == 1, layer, head, :])
+        mean_act = np.mean(activations, 0)
+        sigma_act = empirical_covariance(activations)
+        save_file_A = os.path.join(save_folder, f"model.layers.{layer}.{head}.self_attn.o_proj_A.npy")
+        save_file_b = os.path.join(save_folder, f"model.layers.{layer}.{head}.self_attn.o_proj_b.npy")
+        if os.path.exists(save_file_A) and os.path.exists(save_file_b):
+            A_st = np.load(save_file_A)
+            b_st = np.load(save_file_b)
+        else:
+            mu, S = solve(mean_act, sigma_act, theta, theta_0, alpha, verbose=True)
+            sigma_st = S @ S
+            A_st = compute_A_opt(sigma_act, sigma_st).astype(float)
+            b_st = mu - (A_st @ mean_act).reshape(mu.shape)
+            np.save(save_file_A, A_st)
+            np.save(save_file_b, b_st)
+        interventions[f"model.layers.{layer}.self_attn.o_proj"].append((head, A_st, b_st, probes[layer_head_to_flattened_idx(layer, head, num_heads)], best_th))
+
+    for layer, head in top_heads: 
+        interventions[f"model.layers.{layer}.self_attn.o_proj"] = sorted(interventions[f"model.layers.{layer}.self_attn.o_proj"], key = lambda x: x[0])
+
+>>>>>>> c0d3f0ed2a3921e755cd323ef2cb7b1b4650c406
     # Analysis
     try:
         analysis_file = os.path.join(save_folder, f"check_{alpha}_{kappa}.csv")
@@ -905,6 +967,11 @@ def get_ot_interventions_dict(top_heads, probes, tuning_activations, tuning_labe
         import traceback
         traceback.print_exc()
         pdb.post_mortem()
+<<<<<<< HEAD
     for layer, head in top_heads: 
         interventions[f"model.layers.{layer}.self_attn.o_proj"] = sorted(interventions[f"model.layers.{layer}.self_attn.o_proj"], key = lambda x: x[0])
     return interventions
+=======
+    # breakpoint()
+    return interventions
+>>>>>>> c0d3f0ed2a3921e755cd323ef2cb7b1b4650c406
