@@ -12,10 +12,10 @@ SAVE="/big_storage/baonn/clf"
 ##################################################  
 # TEST
 for MODEL in llama2_chat_7B; do
-    for alpha in 10; do
-        for bl in 1.0; do
+    for alpha in 10 15 20; do
+        for bl in 2.0 2.5 3.0; do
             echo "model: $MODEL alpha: $alpha bl: $bl"
-            CUDA_VISIBLE_DEVICES=2 python ot_edit_layer.py --clf_only 1 --exp test1 --model_name $MODEL --use_mode test --bl $bl --alpha $alpha --device 0 --num_fold 2 --judge_name $JUDGE --info_name $INFO --eval_dataset $EVAL_DATASET --train_dataset $TRAIN_DATASET --clf_folder $SAVE
+            CUDA_VISIBLE_DEVICES=0 python ot_edit_layer.py --exp test1 --model_name $MODEL --use_mode test --bl $bl --alpha $alpha --device 0 --num_fold 2 --judge_name $JUDGE --info_name $INFO --eval_dataset $EVAL_DATASET --train_dataset $TRAIN_DATASET --clf_folder $SAVE
             echo
             echo
         done

@@ -791,14 +791,8 @@ def is_pos_def(x):
 
 def solve(mu_hat, sigma_hat, mu_t, sigma_t, theta, theta0, ref_cov=None, mosek_params={}, alpha=0.1, verbose=False):
     # Init
-<<<<<<< HEAD
     if not is_pos_def(sigma_hat):
         sigma_hat = sigma_hat + np.identity(sigma_hat.shape[0]) * 1e-5
-=======
-    while not is_pos_def(sigma_hat):
-        print("\n Sigma hat is not positive definite, adding diagonals to make it positive definite.\n")
-        sigma_hat += 1e-4 * np.eye(sigma_hat.shape[0])
->>>>>>> c0d3f0ed2a3921e755cd323ef2cb7b1b4650c406
     sigma_hat_sqrt = sqrtm(sigma_hat)
     sigma_t_sqrt = sqrtm(sigma_t)
     d = sigma_hat.shape[0]
@@ -846,41 +840,6 @@ def get_ot_interventions_dict(top_heads, probes, tuning_activations, tuning_labe
         print(f"Created directory: {save_folder}")
     for layer, head in top_heads: 
         interventions[f"model.layers.{layer}.self_attn.o_proj"] = []
-<<<<<<< HEAD
-=======
-    for layer, head in top_heads:
-        try:
-            theta = probes[layer_head_to_flattened_idx(layer, head, num_heads)].coef_.squeeze().reshape(-1, 1)
-            theta_0 = probes[layer_head_to_flattened_idx(layer, head, num_heads)].intercept_.squeeze()
-            probabilities = probes[layer_head_to_flattened_idx(layer, head, num_heads)].predict_proba(tuning_activations[:, layer, head, :])[:, 1]
-            predicted_labels = (probabilities > 0.5).astype(int)
-        except:
-            theta = probes[layer_head_to_flattened_idx(layer, head, num_heads)].linear.weight.detach().numpy().squeeze().reshape(-1, 1)
-            theta_0 = probes[layer_head_to_flattened_idx(layer, head, num_heads)].linear.bias.detach().numpy().squeeze()
-            predicted_labels = ((probes[layer_head_to_flattened_idx(layer, head, num_heads)](tuning_activations[:, layer, head, :])) > 0.5).squeeze()
-
-        activations = np.array(tuning_activations[predicted_labels, layer, head, :])
-        #activations = np.array(tuning_activations[tuning_labels == 1, layer, head, :])
-        mean_act = np.mean(activations, 0)
-        sigma_act = empirical_covariance(activations)
-        save_file_A = os.path.join(save_folder, f"model.layers.{layer}.{head}.self_attn.o_proj_A.npy")
-        save_file_b = os.path.join(save_folder, f"model.layers.{layer}.{head}.self_attn.o_proj_b.npy")
-        if os.path.exists(save_file_A) and os.path.exists(save_file_b):
-            A_st = np.load(save_file_A)
-            b_st = np.load(save_file_b)
-        else:
-            mu, S = solve(mean_act, sigma_act, theta, theta_0, alpha, verbose=True)
-            sigma_st = S @ S
-            A_st = compute_A_opt(sigma_act, sigma_st).astype(float)
-            b_st = mu - (A_st @ mean_act).reshape(mu.shape)
-            np.save(save_file_A, A_st)
-            np.save(save_file_b, b_st)
-        interventions[f"model.layers.{layer}.self_attn.o_proj"].append((head, A_st, b_st, probes[layer_head_to_flattened_idx(layer, head, num_heads)], best_th))
-
-    for layer, head in top_heads: 
-        interventions[f"model.layers.{layer}.self_attn.o_proj"] = sorted(interventions[f"model.layers.{layer}.self_attn.o_proj"], key = lambda x: x[0])
-
->>>>>>> c0d3f0ed2a3921e755cd323ef2cb7b1b4650c406
     # Analysis
     try:
         analysis_file = os.path.join(save_folder, f"check_{alpha}_{kappa}.csv")
@@ -967,11 +926,6 @@ def get_ot_interventions_dict(top_heads, probes, tuning_activations, tuning_labe
         import traceback
         traceback.print_exc()
         pdb.post_mortem()
-<<<<<<< HEAD
     for layer, head in top_heads: 
         interventions[f"model.layers.{layer}.self_attn.o_proj"] = sorted(interventions[f"model.layers.{layer}.self_attn.o_proj"], key = lambda x: x[0])
     return interventions
-=======
-    # breakpoint()
-    return interventions
->>>>>>> c0d3f0ed2a3921e755cd323ef2cb7b1b4650c406

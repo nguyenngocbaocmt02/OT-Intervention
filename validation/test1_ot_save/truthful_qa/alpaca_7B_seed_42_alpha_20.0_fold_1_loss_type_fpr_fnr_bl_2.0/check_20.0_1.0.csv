@@ -1,0 +1,13 @@
+Layer,Head,accuracy,u_to_d_clf,du_to_d_clf,uu_to_d_clf
+11,0,tensor(0.6986),tensor(1.),tensor(1.),tensor(1.)
+
+11,1,tensor(0.6914),tensor(1.),tensor(1.),tensor(1.)
+
+11,2,tensor(0.6961),tensor(1.),tensor(1.),tensor(1.)
+
+11,3,tensor(0.7118),tensor(1.),tensor(1.),tensor(1.)
+
+11,4,tensor(0.7327),tensor(1.),tensor(1.),tensor(1.)
+
+11,5,tensor(0.7080),tensor(1.),tensor(1.),tensor(1.)
+
