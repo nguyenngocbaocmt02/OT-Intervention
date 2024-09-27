@@ -95,7 +95,6 @@ def main():
 
     parser.add_argument('--use_ot_intervention', action='store_true', help='use ot intervention', default=False)
     parser.add_argument('--alpha_ot', type=float, default=0.1, help='alpha, intervention strength')
-    parser.add_argument('--kappa_ot', type=float, default=1.0, help="balancing term for loss")
 
     args = parser.parse_args()
 
@@ -172,9 +171,12 @@ def main():
         print("Heads intervened: ", sorted(top_heads))
 
         if args.use_ot_intervention:
-            used_activations = torch.tensor(np.concatenate([separated_head_wise_activations[i] for i in train_set_idxs] + [separated_head_wise_activations[i] for i in val_set_idxs], axis = 0), dtype=torch.float32)
-            save_folder = f'ot_save/iti/{args.train_dataset}/{args.model_name}_seed_{args.seed}_alpha_{args.alpha}_fold_{i}_top_{args.num_heads}'
-            interventions = get_ot_interventions_dict(top_heads, probes, used_activations, None, None, num_heads, save_folder, alpha=args.alpha_ot)
+            used_activations = torch.tensor(np.concatenate([separated_head_wise_activations[i] for i in train_set_idxs], axis = 0), dtype=torch.float32)
+            y_train = 1 - np.concatenate([separated_labels[i] for i in train_set_idxs], axis = 0)
+            used_labels = torch.tensor(y_train, dtype=torch.float32) 
+            save_folder = f'ot_save/iti/{args.train_dataset}/{args.model_name}_seed_{args.seed}_alpha_{args.alpha_ot}_fold_{i}_top_{args.num_heads}'
+            interventions = get_ot_interventions_dict(top_heads, probes, used_activations, used_labels, 0, num_heads, save_folder, alpha=args.alpha_ot)
+            
             def lt_modulated_vector_add(head_output, layer_name, start_edit_location='lt'): 
                 head_output = rearrange(head_output, 'b s (h d) -> b s h d', h=num_heads)
                 for ijk, (head, A, b, clf, th) in enumerate(interventions[layer_name]):
@@ -221,8 +223,8 @@ def main():
         else:
             test_file = PATHs[args.eval_dataset]
         
-        output_path = f'results_dump/{args.eval_dataset}/iti/answer_dump/{args.use_mode}/{filename}.csv'
-        summary_path = f'results_dump/{args.eval_dataset}/iti/summary_dump/{args.use_mode}/{filename}.csv'
+        output_path = f'results_dump/{args.eval_dataset}/{args.instruction_prompt}_iti/answer_dump/{args.use_mode}/{filename}.csv'
+        summary_path = f'results_dump/{args.eval_dataset}/{args.instruction_prompt}_iti/summary_dump/{args.use_mode}/{filename}.csv'
         os.makedirs(os.path.dirname(output_path), exist_ok=True)
         os.makedirs(os.path.dirname(summary_path), exist_ok=True)
         curr_fold_results = alt_tqa_evaluate(

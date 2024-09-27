@@ -218,6 +218,7 @@ def main():
         vote_logs = []
         for layer_idx in range(num_layers):
             val_votes = []
+            accs = []
             for head_idx in range(num_heads):
                 save_path_clf = f"{args.clf_folder}/{args.train_dataset}/seed_{args.seed}_fold_{fold}_{args.model_name}_dataset_{args.dataset_name}_loss_type_{args.loss_type}_bl_{args.bl}_layer_{layer_idx}_head_{head_idx}.pth"
             
@@ -265,20 +266,21 @@ def main():
                 clf.eval()
                 probes.append(clf)
                 val_outputs = clf(X_val_tensor)
+                predicted_labels = (val_outputs.squeeze() > 0.5).float()
                 val_votes.append((val_outputs.squeeze() > 0.5).float())
+                accs.append(rloss_func(predicted_labels, y_val_tensor))
             no_votes = len(val_votes)
             best_th = 0
+            best_FNR = float("inf")
             best_loss = float("inf")
-            best_acc = 0
-            for threshold in range(0, int(no_votes / 2)):
+            for threshold in range(0, no_votes):
                 predicted_labels = (torch.mean(torch.stack(val_votes), axis=0).squeeze() >= threshold * 1.0 / no_votes).float()
                 val_loss = rloss_func(predicted_labels, y_val_tensor)
-                acc = torch.sum((predicted_labels == y_val_tensor)).item() / len(y_val_tensor)
                 FNR = torch.sum((predicted_labels == 0) & (y_val_tensor == 1)).item() / torch.sum(y_val_tensor == 1)
-                if val_loss < best_loss and FNR == 0 and acc > best_acc:
+                if best_FNR < FNR or (best_FNR == FNR and val_loss < best_loss):
                     best_th = threshold
                     best_loss = val_loss
-                    best_acc = acc
+                    best_FNR = FNR
             predicted_labels = (torch.mean(torch.stack(val_votes), axis=0).squeeze() >= best_th * 1.0 / no_votes).float()
             accuracy = torch.sum((predicted_labels == y_val_tensor)).item() / len(y_val_tensor)
             TP = torch.sum((predicted_labels == 1) & (y_val_tensor == 1)).item() 
@@ -288,22 +290,22 @@ def main():
             FPR = torch.sum((predicted_labels == 1) & (y_val_tensor == 0)).item() / torch.sum(y_val_tensor == 0)
             FNR = torch.sum((predicted_labels == 0) & (y_val_tensor == 1)).item() / torch.sum(y_val_tensor == 1)
             val_loss =  rloss_func(predicted_labels, y_val_tensor)
-            val_loss_logs.append(val_loss)
+            val_loss_logs.append(sum(accs) / len(accs))
             vote_logs.append(best_th)
             F1 = 2 * TP / (2 * TP + FN + FP)
-            print(f"Layer {layer_idx}: Threshold: {best_th},Acc:{accuracy}, F1={F1}, FPR: {FPR}, FNR: {FNR}, VAL_LOSS: {val_loss}")
+            print(f"Layer {layer_idx}: Threshold: {best_th},Acc:{accuracy}, F1={F1}, FPR: {FPR}, FNR: {FNR}, VAL_LOSS: {val_loss}, ACCS: {max(accs)}, {min(accs)}, {sum(accs) / len(accs)}")
         
         target_layer = np.argmin(val_loss_logs)
         best_th = vote_logs[target_layer]
         for head in range(num_heads):
             top_heads.append((target_layer, head))
-        print(f"Threshold: {best_th}, Heads intervened: ", sorted(top_heads))
+        print(f"Threshold: {best_th}, Heads intervened:, {sorted(top_heads)}, Avg layer loss: ", {val_loss_logs[target_layer]})
         if args.clf_only == 1:
             continue
         save_folder = f'{args.exp}_ot_save/{args.train_dataset}/{args.model_name}_seed_{args.seed}_alpha_{args.alpha}_fold_{fold}_loss_type_{args.loss_type}_bl_{args.bl}'
         used_activations = torch.tensor(np.concatenate([separated_head_wise_activations[i] for i in train_set_idxs], axis = 0), dtype=torch.float32)
         used_labels = torch.tensor(y_train, dtype=torch.float32) 
-        interventions = get_ot_interventions_dict(top_heads, probes, used_activations, used_labels, tuning_activations, best_th, num_heads, save_folder, alpha=args.alpha)
+        interventions = get_ot_interventions_dict(top_heads, probes, used_activations, used_labels, best_th, num_heads, save_folder, alpha=args.alpha)
         
         if args.use_iti:
             com_directions = get_com_directions(num_layers, num_heads, train_set_idxs, val_set_idxs, separated_head_wise_activations, separated_labels)
@@ -379,8 +381,8 @@ def main():
         else:
             test_file = PATHs[args.eval_dataset]
 
-        output_path = f'results_dump/{args.eval_dataset}/{args.exp}_ours/answer_dump/{args.use_mode}/{filename}.csv'
-        summary_path = f'results_dump/{args.eval_dataset}/{args.exp}_ours/summary_dump/{args.use_mode}/{filename}.csv'
+        output_path = f'results_dump/{args.eval_dataset}/{args.exp}_{args.instruction_prompt}_ours/answer_dump/{args.use_mode}/{filename}.csv'
+        summary_path = f'results_dump/{args.eval_dataset}/{args.exp}_{args.instruction_prompt}_ours/summary_dump/{args.use_mode}/{filename}.csv'
         os.makedirs(os.path.dirname(output_path), exist_ok=True)
         os.makedirs(os.path.dirname(summary_path), exist_ok=True)
         
