@@ -12,9 +12,14 @@ import torch.optim as optim
 import torch.nn as nn
 import torch.nn.functional as F
 from transformers import AutoTokenizer, AutoModelForCausalLM
+from truthfulqa import metrics, models, utilities
+from truthfulqa.configs import ANSWER_COL, BEST_COL, INCORRECT_COL
+from truthfulqa.utilities import (find_start, format_best, format_prompt,
+                                  format_prompt_with_answer_strings,
+                                  split_multi_answer)
 import sys
 sys.path.append('../')
-from utils import alt_tqa_evaluate, flattened_idx_to_layer_head, layer_head_to_flattened_idx, get_interventions_dict, get_ot_interventions_dict, get_top_heads, get_separated_activations, get_com_directions
+from utils import alt_tqa_evaluate, format_truthfulqa, flattened_idx_to_layer_head, layer_head_to_flattened_idx, get_interventions_dict, get_ot_interventions_dict, get_top_heads, get_separated_activations, get_com_directions
 import llama
 HF_NAMES = {
     # Base models
@@ -122,10 +127,12 @@ def main():
     parser.add_argument('--alpha', type=float, default=30, help='alpha, intervention threshold')
     parser.add_argument('--loss_type', type=str, default="fpr_fnr", help="loss for probing")
     parser.add_argument('--bl', type=float, default=1.0, help="balancing term for loss")
-    parser.add_argument('--use_mode', type=str, default="test", help="parameter selection or test")
     parser.add_argument('--instruction_prompt', default="default",type=str, required=False)
     parser.add_argument('--clf_folder', default="./clf",type=str, required=False)
     parser.add_argument('--clf_only', default=0,type=int)
+    parser.add_argument('--layer_sweep', default=2,type=int)
+    parser.add_argument('--exp_mode', type=str, default='test', help='val or test')
+    parser.add_argument('--prompting', default=0,type=int)
 
     parser.add_argument('--use_iti', action='store_true', help='use iti to select intervened heads', default=False)
     parser.add_argument('--activations_dataset', type=str, default="tqa_gen_end_q", help='feature bank for calculating std along direction')
@@ -135,8 +142,7 @@ def main():
     # set seeds
     torch.manual_seed(args.seed)
     np.random.seed(args.seed)
-    torch.cuda.manual_seed_all(args.seed)
-
+    torch.cuda.manual_seed_all(args.seed) 
     df = read_df(args.train_dataset)
 
     # order csv by huggingface order, the order used to save activations
@@ -212,7 +218,7 @@ def main():
         y_train = 1 - np.concatenate([separated_labels[i] for i in train_set_idxs], axis = 0)
         y_val = 1 - np.concatenate([separated_labels[i] for i in val_set_idxs], axis = 0)
 
-        top_heads, probes = [], []
+        probes = []
         
         val_loss_logs = []
         vote_logs = []
@@ -270,14 +276,14 @@ def main():
                 val_votes.append((val_outputs.squeeze() > 0.5).float())
                 accs.append(rloss_func(predicted_labels, y_val_tensor))
             no_votes = len(val_votes)
-            best_th = 0
+            best_th = 16
             best_FNR = float("inf")
             best_loss = float("inf")
-            for threshold in range(0, no_votes):
+            for threshold in range(0, int(no_votes)):
                 predicted_labels = (torch.mean(torch.stack(val_votes), axis=0).squeeze() >= threshold * 1.0 / no_votes).float()
                 val_loss = rloss_func(predicted_labels, y_val_tensor)
                 FNR = torch.sum((predicted_labels == 0) & (y_val_tensor == 1)).item() / torch.sum(y_val_tensor == 1)
-                if best_FNR < FNR or (best_FNR == FNR and val_loss < best_loss):
+                if FNR < best_FNR or (best_FNR == FNR and val_loss < best_loss):
                     best_th = threshold
                     best_loss = val_loss
                     best_FNR = FNR
@@ -290,71 +296,110 @@ def main():
             FPR = torch.sum((predicted_labels == 1) & (y_val_tensor == 0)).item() / torch.sum(y_val_tensor == 0)
             FNR = torch.sum((predicted_labels == 0) & (y_val_tensor == 1)).item() / torch.sum(y_val_tensor == 1)
             val_loss =  rloss_func(predicted_labels, y_val_tensor)
-            val_loss_logs.append(sum(accs) / len(accs))
+            val_loss_logs.append(np.mean(accs))
             vote_logs.append(best_th)
             F1 = 2 * TP / (2 * TP + FN + FP)
             print(f"Layer {layer_idx}: Threshold: {best_th},Acc:{accuracy}, F1={F1}, FPR: {FPR}, FNR: {FNR}, VAL_LOSS: {val_loss}, ACCS: {max(accs)}, {min(accs)}, {sum(accs) / len(accs)}")
         
-        target_layer = np.argmin(val_loss_logs)
-        best_th = vote_logs[target_layer]
-        for head in range(num_heads):
-            top_heads.append((target_layer, head))
-        print(f"Threshold: {best_th}, Heads intervened:, {sorted(top_heads)}, Avg layer loss: ", {val_loss_logs[target_layer]})
-        if args.clf_only == 1:
-            continue
-        save_folder = f'{args.exp}_ot_save/{args.train_dataset}/{args.model_name}_seed_{args.seed}_alpha_{args.alpha}_fold_{fold}_loss_type_{args.loss_type}_bl_{args.bl}'
-        used_activations = torch.tensor(np.concatenate([separated_head_wise_activations[i] for i in train_set_idxs], axis = 0), dtype=torch.float32)
-        used_labels = torch.tensor(y_train, dtype=torch.float32) 
-        interventions = get_ot_interventions_dict(top_heads, probes, used_activations, used_labels, best_th, num_heads, save_folder, alpha=args.alpha)
-        
-        if args.use_iti:
-            com_directions = get_com_directions(num_layers, num_heads, train_set_idxs, val_set_idxs, separated_head_wise_activations, separated_labels)
-            interventions = get_interventions_dict(top_heads, probes, tuning_activations, num_heads, True, False, com_directions)
-            def lt_modulated_vector_add(head_output, layer_name, start_edit_location='lt'): 
-                head_output = rearrange(head_output, 'b s (h d) -> b s h d', h=num_heads)
-                for head, direction, proj_val_std in interventions[layer_name]:
-                    direction_to_add = torch.tensor(direction).to(head_output.device.index)
-                    if start_edit_location == 'lt':
-                        head_output[:, -1, head, :] += args.alpha_iti * proj_val_std * direction_to_add
-                    else: 
-                        head_output[:, start_edit_location:, head, :] += args.alpha_iti * proj_val_std * direction_to_add
-                head_output = rearrange(head_output, 'b s h d -> b s (h d)')
-                return head_output
-        else:
-            def lt_modulated_vector_add(head_output, layer_name, start_edit_location='lt'): 
-                head_output = rearrange(head_output, 'b s (h d) -> b s h d', h=num_heads)
-                threshold = None
-                if start_edit_location == 'lt': 
-                    votes = []
-                    probs = []
-                    for i, (head, A, b, clf, th) in enumerate(interventions[layer_name]):
-                        threshold = th
-                        clf = clf.to(head_output.device.index)
-                        inputs = head_output[:, -1, head, :]
-                        prob = clf(inputs.to(clf.linear.weight.dtype))
-                        probs.append(prob)
-                        votes.append((prob > 0.5).float())
-                    probs = torch.cat(probs, dim=1)
-                    votes = torch.cat(votes, dim=1)
-                    mask = (torch.sum(votes, axis=1, keepdim=True) >= threshold)
-                    for i, (head, A, b, clf, th) in enumerate(interventions[layer_name]):
-                        A_to_add = torch.tensor(A).to(head_output.device.index)
-                        b_to_add = torch.tensor(b).to(head_output.device.index)
-                        head_mask = ((mask.bool() & votes[:, [i]].bool())).reshape((-1)).bool()
-                        if torch.sum(head_mask).item() == 0:
-                            continue
-                        delta = A_to_add.half() @ head_output[head_mask, -1, head, :].T + b_to_add.half() - head_output[head_mask, -1, head, :].T
-                        delta = delta.reshape(head_output[head_mask, -1, head, :].shape)
-                        head_output[head_mask, -1, head, :] += delta
-
+        target_layers = np.argsort(val_loss_logs)[:args.layer_sweep]
+        print("Target: ", target_layers)
+        ite = -1
+        val_score = []
+        while ite < len(target_layers) + 1:
+            ite += 1
+            if args.exp_mode == "test":
+                if len(target_layers) == 1:
+                    mode = "test"
+                    eval_dataset = args.eval_dataset
+                    target_layer = target_layers[0]
+                elif ite == len(target_layers):
+                    eval_dataset = args.eval_dataset
+                    mode = "test"
+                    target_layer = target_layers[np.argmax(val_score)]
                 else:
-                    for loc in range(start_edit_location, head_output.shape[1]):
+                    target_layer = target_layers[ite]
+                    eval_dataset = args.train_dataset
+                    mode = "val"
+            elif args.exp_mode == "val":
+                if ite == len(target_layers):
+                    break
+                else:
+                    target_layer = target_layers[ite]
+                    eval_dataset = args.train_dataset
+                    mode = "val"
+            best_th = vote_logs[target_layer]
+            top_heads = []
+            for head in range(num_heads):
+                top_heads.append((target_layer, head))
+            print(f"{mode} - Threshold: {best_th}, Heads intervened:, {sorted(top_heads)}, Avg layer loss: ", {val_loss_logs[target_layer]})
+            if args.clf_only == 1:
+                continue
+            
+            if args.use_iti:
+                filename = f'iti_{args.model_name}_train_{args.train_dataset}_seed_{args.seed}_alpha_{args.alpha_iti}_fold_{fold}_lt_{args.loss_type}_bl_{args.bl}_layer_{target_layer}'
+            else:
+                filename = f'{args.model_name}_train_{args.train_dataset}_seed_{args.seed}_alpha_{args.alpha}_fold_{fold}_lt_{args.loss_type}_bl_{args.bl}_layer_{target_layer}'
+            
+            if args.train_dataset == eval_dataset:
+                test_file = f'splits/{args.train_dataset}/fold_{fold}_{mode}_seed_{args.seed}.csv'
+            else:
+                test_file = PATHs[eval_dataset]
+
+            many_shot_prefix = ""
+            if args.prompting > 0:
+                train_file = f'splits/{args.train_dataset}/fold_{fold}_train_seed_{args.seed}.csv'
+                frame = utilities.load_questions(filename=train_file)       
+                for idx in range(min(args.prompting, len(frame.index))): 
+                    many_shot_prefix += format_prompt_with_answer_strings(frame.loc[idx]["Question"], frame.loc[idx]["Best Answer"], 'null', format='general')
+                    if idx != min(args.prompting, len(frame.index)) - 1:
+                        many_shot_prefix += '\n\n'
+                file_name = f'shot{args.prompting}_' + file_name
+
+
+            output_path = f'results_dump/{eval_dataset}/{args.exp}_{args.instruction_prompt}_ours/answer_dump/{mode}/{filename}.csv'
+            summary_path = f'results_dump/{eval_dataset}/{args.exp}_{args.instruction_prompt}_ours/summary_dump/{mode}/{filename}.csv'
+            os.makedirs(os.path.dirname(output_path), exist_ok=True)
+            os.makedirs(os.path.dirname(summary_path), exist_ok=True)
+
+            if mode == "val" and os.path.exists(summary_path):
+                try:
+                    df_sum = pd.read_csv(summary_path)
+                    val_score.append(df_sum.loc[0]["GPT-info acc"] * df_sum.loc[0]["GPT-judge acc"])
+                    print(f"FOLD {fold} - val - layer {target_layer}")
+                    print(df_sum)
+                    continue
+                except:
+                    pass
+            
+            save_folder = f'{args.exp}_ot_save/{args.train_dataset}/{args.model_name}_seed_{args.seed}_alpha_{args.alpha}_fold_{fold}_loss_type_{args.loss_type}_bl_{args.bl}'
+            used_activations = torch.tensor(np.concatenate([separated_head_wise_activations[i] for i in train_set_idxs], axis = 0), dtype=torch.float32)
+            used_labels = torch.tensor(y_train, dtype=torch.float32) 
+            interventions = get_ot_interventions_dict(top_heads, probes, used_activations, used_labels, best_th, num_heads, save_folder, alpha=args.alpha)
+            
+            if args.use_iti:
+                com_directions = get_com_directions(num_layers, num_heads, train_set_idxs, val_set_idxs, separated_head_wise_activations, separated_labels)
+                interventions = get_interventions_dict(top_heads, probes, tuning_activations, num_heads, True, False, com_directions)
+                def lt_modulated_vector_add(head_output, layer_name, start_edit_location='lt'): 
+                    head_output = rearrange(head_output, 'b s (h d) -> b s h d', h=num_heads)
+                    for head, direction, proj_val_std in interventions[layer_name]:
+                        direction_to_add = torch.tensor(direction).to(head_output.device.index)
+                        if start_edit_location == 'lt':
+                            head_output[:, -1, head, :] += args.alpha_iti * proj_val_std * direction_to_add
+                        else: 
+                            head_output[:, start_edit_location:, head, :] += args.alpha_iti * proj_val_std * direction_to_add
+                    head_output = rearrange(head_output, 'b s h d -> b s (h d)')
+                    return head_output
+            else:
+                def lt_modulated_vector_add(head_output, layer_name, start_edit_location='lt'): 
+                    head_output = rearrange(head_output, 'b s (h d) -> b s h d', h=num_heads)
+                    threshold = None
+                    if start_edit_location == 'lt': 
                         votes = []
                         probs = []
                         for i, (head, A, b, clf, th) in enumerate(interventions[layer_name]):
-                            clf = clf.to(head_output.device.index)
                             threshold = th
-                            inputs = head_output[:, loc, head, :]
+                            clf = clf.to(head_output.device.index)
+                            inputs = head_output[:, -1, head, :]
                             prob = clf(inputs.to(clf.linear.weight.dtype))
                             probs.append(prob)
                             votes.append((prob > 0.5).float())
@@ -367,48 +412,64 @@ def main():
                             head_mask = ((mask.bool() & votes[:, [i]].bool())).reshape((-1)).bool()
                             if torch.sum(head_mask).item() == 0:
                                 continue
-                            delta = A_to_add.half() @ head_output[head_mask, loc, head, :].T + b_to_add.half() - head_output[head_mask, loc, head, :].T
-                            delta = delta.reshape(head_output[head_mask, loc, head, :].shape)
-                            head_output[head_mask, loc, head, :] += delta
-    
-                head_output = rearrange(head_output, 'b s h d -> b s (h d)')
-                return head_output
-            
+                            delta = A_to_add.half() @ head_output[head_mask, -1, head, :].T + b_to_add.half() - head_output[head_mask, -1, head, :].T
+                            delta = delta.reshape(head_output[head_mask, -1, head, :].shape)
+                            head_output[head_mask, -1, head, :] += delta
+
+                    else:
+                        for loc in range(start_edit_location, head_output.shape[1]):
+                            votes = []
+                            probs = []
+                            for i, (head, A, b, clf, th) in enumerate(interventions[layer_name]):
+                                clf = clf.to(head_output.device.index)
+                                threshold = th
+                                inputs = head_output[:, loc, head, :]
+                                prob = clf(inputs.to(clf.linear.weight.dtype))
+                                probs.append(prob)
+                                votes.append((prob > 0.5).float())
+                            probs = torch.cat(probs, dim=1)
+                            votes = torch.cat(votes, dim=1)
+                            mask = (torch.sum(votes, axis=1, keepdim=True) >= threshold)
+                            for i, (head, A, b, clf, th) in enumerate(interventions[layer_name]):
+                                A_to_add = torch.tensor(A).to(head_output.device.index)
+                                b_to_add = torch.tensor(b).to(head_output.device.index)
+                                head_mask = ((mask.bool() & votes[:, [i]].bool())).reshape((-1)).bool()
+                                if torch.sum(head_mask).item() == 0:
+                                    continue
+                                delta = A_to_add.half() @ head_output[head_mask, loc, head, :].T + b_to_add.half() - head_output[head_mask, loc, head, :].T
+                                delta = delta.reshape(head_output[head_mask, loc, head, :].shape)
+                                head_output[head_mask, loc, head, :] += delta
         
-        filename = f'{args.model_name}_train_{args.train_dataset}_seed_{args.seed}_alpha_{args.alpha}_fold_{fold}_loss_type_{args.loss_type}_bl_{args.bl}_use_iti_{args.use_iti}'
-        if args.train_dataset == args.eval_dataset:
-            test_file = f'splits/{args.train_dataset}/fold_{fold}_{args.use_mode}_seed_{args.seed}.csv'
-        else:
-            test_file = PATHs[args.eval_dataset]
-
-        output_path = f'results_dump/{args.eval_dataset}/{args.exp}_{args.instruction_prompt}_ours/answer_dump/{args.use_mode}/{filename}.csv'
-        summary_path = f'results_dump/{args.eval_dataset}/{args.exp}_{args.instruction_prompt}_ours/summary_dump/{args.use_mode}/{filename}.csv'
-        os.makedirs(os.path.dirname(output_path), exist_ok=True)
-        os.makedirs(os.path.dirname(summary_path), exist_ok=True)
-        
-        curr_fold_results = alt_tqa_evaluate(
-            models={args.model_name: model},
-            metric_names=['judge', 'info', 'mc'],
-            #metric_names=['mc'],
-            input_path=test_file,
-            output_path=output_path,
-            summary_path=summary_path,
-            device="cuda", 
-            interventions=interventions, 
-            intervention_fn=lt_modulated_vector_add, 
-            instruction_prompt=args.instruction_prompt,
-            judge_name=args.judge_name, 
-            info_name=args.info_name
-        )
-
-        print(f"FOLD {fold}")
-        print(curr_fold_results)
-
-        curr_fold_results = curr_fold_results.to_numpy()[0].astype(float)
-        results.append(curr_fold_results)
-    results = np.array(results)
-    final = results.mean(axis=0)
-    #print(f'alpha: {args.alpha}, True*Info Score: {final[1]*final[0]}, True Score: {final[1]}, Info Score: {final[0]}, MC1 Score: {final[2]}, MC2 Score: {final[3]}, CE Loss: {final[4]}, KL wrt Original: {final[5]}')
+                    head_output = rearrange(head_output, 'b s h d -> b s (h d)')
+                    return head_output
+            if mode == "test":
+                metrics = ['judge', 'info', 'mc']
+            else:
+                metrics = ['judge', 'info']
+            curr_fold_results = alt_tqa_evaluate(
+                models={args.model_name: model},
+                metric_names=metrics,
+                input_path=test_file,
+                output_path=output_path,
+                summary_path=summary_path,
+                device="cuda", 
+                interventions=interventions, 
+                intervention_fn=lt_modulated_vector_add, 
+                instruction_prompt=args.instruction_prompt,
+                judge_name=args.judge_name, 
+                info_name=args.info_name,
+                many_shot_prefix=many_shot_prefix
+            )
+            if mode == "val":
+                print(f"FOLD {fold} - val - layer {target_layer}")
+                print(curr_fold_results)
+                curr_fold_results = curr_fold_results.to_numpy()[0].astype(float)
+                val_score.append(curr_fold_results[0] * curr_fold_results[1])
+            else:
+                print(f"FOLD {fold} - test - layer {target_layer}")
+                print(curr_fold_results)
+                curr_fold_results = curr_fold_results.to_numpy()[0].astype(float)
+                break
 
 if __name__ == "__main__":
     main()

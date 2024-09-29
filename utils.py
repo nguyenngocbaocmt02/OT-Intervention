@@ -818,7 +818,6 @@ def solve(mu_hat, sigma_hat, theta, theta0, ref_cov=None, mosek_params={}, alpha
     # Objective and solve
     objective = cp.Minimize(cp.norm(mu - mu_hat[..., np.newaxis]) ** 2 + cp.norm(S - sigma_hat_sqrt, "fro") ** 2)
     p = cp.Problem(objective, constraints)
-    print(t.value)
     result = p.solve(solver=cp.MOSEK, mosek_params=mosek_params, verbose=verbose)
     # Results
     if p.status not in ["infeasible", "unbounded"]:
@@ -840,57 +839,52 @@ def get_ot_interventions_dict(top_heads, probes, tuning_activations, tuning_labe
     for layer, head in top_heads: 
         interventions[f"model.layers.{layer}.self_attn.o_proj"] = []
     # Analysis
-    try:
-        analysis_file = os.path.join(save_folder, f"check_{alpha}.csv")
-        with open(analysis_file, mode="w") as file:
-            writer = csv.writer(file)
-            writer.writerow(['Layer', 'Head', 'accuracy', 'u_to_d_clf', 'du_to_d_clf', "uu_to_d_clf"])
-        for layer, head in top_heads:
-            try:
-                theta = probes[layer_head_to_flattened_idx(layer, head, num_heads)].coef_.squeeze().reshape(-1, 1)
-                theta_0 = probes[layer_head_to_flattened_idx(layer, head, num_heads)].intercept_.squeeze()
-                probabilities = probes[layer_head_to_flattened_idx(layer, head, num_heads)].predict_proba(tuning_activations[:, layer, head, :])[:, 1]
-                predicted_labels = (probabilities > 0.5).astype(int)
-            except:
-                theta = probes[layer_head_to_flattened_idx(layer, head, num_heads)].linear.weight.detach().numpy().squeeze().reshape(-1, 1)
-                theta_0 = probes[layer_head_to_flattened_idx(layer, head, num_heads)].linear.bias.detach().numpy().squeeze()
-                predicted_labels = ((probes[layer_head_to_flattened_idx(layer, head, num_heads)](tuning_activations[:, layer, head, :])) > 0.5).squeeze()
+    analysis_file = os.path.join(save_folder, f"check_{alpha}.csv")
+    with open(analysis_file, mode="w") as file:
+        writer = csv.writer(file)
+        writer.writerow(['Layer', 'Head', 'accuracy', 'u_to_d_clf', 'du_to_d_clf', "uu_to_d_clf"])
+    for layer, head in top_heads:
+        try:
+            theta = probes[layer_head_to_flattened_idx(layer, head, num_heads)].linear.weight.detach().cpu().numpy().squeeze().reshape(-1, 1)
+            theta_0 = probes[layer_head_to_flattened_idx(layer, head, num_heads)].linear.bias.detach().cpu().numpy().squeeze()
+            predicted_labels = ((probes[layer_head_to_flattened_idx(layer, head, num_heads)].to("cpu")(tuning_activations[:, layer, head, :])) > 0.5).squeeze()
+        except:
+            theta = probes[layer_head_to_flattened_idx(layer, head, num_heads)].coef_.squeeze().reshape(-1, 1)
+            theta_0 = probes[layer_head_to_flattened_idx(layer, head, num_heads)].intercept_.squeeze()
+            probabilities = probes[layer_head_to_flattened_idx(layer, head, num_heads)].predict_proba(tuning_activations[:, layer, head, :])[:, 1]
+            predicted_labels = (probabilities > 0.5).astype(int)
 
-            acc =  torch.mean((tuning_labels == predicted_labels).float())
-            activations = np.array(tuning_activations[predicted_labels, layer, head, :])
-            mean_act = np.mean(activations, 0)
-            sigma_act = empirical_covariance(activations)
-            ref_cov = empirical_covariance(np.array(tuning_activations[tuning_labels == 0, layer, head, :]))
+        acc =  torch.mean((tuning_labels == predicted_labels).float())
+        activations = np.array(tuning_activations[predicted_labels, layer, head, :])
+        mean_act = np.mean(activations, 0)
+        sigma_act = empirical_covariance(activations)
+        ref_cov = empirical_covariance(np.array(tuning_activations[tuning_labels == 0, layer, head, :]))
+    
+        save_file_A = os.path.join(save_folder, f"model.layers.{layer}.{head}.self_attn.o_proj_A.npy")
+        save_file_b = os.path.join(save_folder, f"model.layers.{layer}.{head}.self_attn.o_proj_b.npy")
+        try:
+            A_st = np.load(save_file_A)
+            b_st = np.load(save_file_b)
+        except:
+            if os.path.exists(save_file_A):
+                os.remove(save_file_A)
+            if os.path.exists(save_file_b):
+                os.remove(save_file_b)
+            mosek_params = {}
+            mu, S = solve(mean_act, sigma_act, theta, theta_0, ref_cov=ref_cov,alpha=alpha, mosek_params=mosek_params)
+            sigma_st = S @ S
+            A_st = compute_A_opt(sigma_act, sigma_st).astype(float)
+            b_st = mu - (A_st @ mean_act).reshape(mu.shape)
+            np.save(save_file_A, A_st)
+            np.save(save_file_b, b_st)
+        interventions[f"model.layers.{layer}.self_attn.o_proj"].append((head, A_st, b_st, probes[layer_head_to_flattened_idx(layer, head, num_heads)], best_th))
         
-            save_file_A = os.path.join(save_folder, f"model.layers.{layer}.{head}.self_attn.o_proj_A.npy")
-            save_file_b = os.path.join(save_folder, f"model.layers.{layer}.{head}.self_attn.o_proj_b.npy")
-            try:
-                A_st = np.load(save_file_A)
-                b_st = np.load(save_file_b)
-            except:
-                if os.path.exists(save_file_A):
-                    os.remove(save_file_A)
-                if os.path.exists(save_file_b):
-                    os.remove(save_file_b)
-                mosek_params = {}
-                mu, S = solve(mean_act, sigma_act, theta, theta_0, ref_cov=ref_cov,alpha=alpha, mosek_params=mosek_params, verbose=True)
-                sigma_st = S @ S
-                A_st = compute_A_opt(sigma_act, sigma_st).astype(float)
-                b_st = mu - (A_st @ mean_act).reshape(mu.shape)
-                np.save(save_file_A, A_st)
-                np.save(save_file_b, b_st)
-            interventions[f"model.layers.{layer}.self_attn.o_proj"].append((head, A_st, b_st, probes[layer_head_to_flattened_idx(layer, head, num_heads)], best_th))
-            
-            
-            with open(analysis_file, 'a') as file:
-                writer = csv.writer(file)
-                writer.writerow([layer, head, acc])
-                writer.writerow([])
-    except Exception as e:
-        import pdb
-        import traceback
-        traceback.print_exc()
-        pdb.post_mortem()
+        
+        with open(analysis_file, 'a') as file:
+            writer = csv.writer(file)
+            writer.writerow([layer, head, acc])
+            writer.writerow([])
+
     for layer, head in top_heads: 
         interventions[f"model.layers.{layer}.self_attn.o_proj"] = sorted(interventions[f"model.layers.{layer}.self_attn.o_proj"], key = lambda x: x[0])
     return interventions

@@ -9,7 +9,11 @@ import numpy as np
 import argparse
 from datasets import load_dataset
 from transformers import AutoTokenizer, AutoModel, AutoModelForCausalLM, AutoConfig
-
+from truthfulqa import metrics, models, utilities
+from truthfulqa.configs import ANSWER_COL, BEST_COL, INCORRECT_COL
+from truthfulqa.utilities import (find_start, format_best, format_prompt,
+                                  format_prompt_with_answer_strings,
+                                  split_multi_answer)
 import sys
 sys.path.append('../')
 from utils import alt_tqa_evaluate, flattened_idx_to_layer_head, layer_head_to_flattened_idx, get_interventions_dict, get_top_heads, get_separated_activations, get_com_directions, get_ot_interventions_dict
@@ -92,7 +96,8 @@ def main():
     parser.add_argument('--eval_dataset', type=str, default='truthful_qa', help='Dataset used for evaluating model')
     parser.add_argument('--train_dataset', type=str, default='truthful_qa', help='Dataset used for training')
     parser.add_argument('--use_mode', type=str, default="test", help="parameter selection or test")
-
+    parser.add_argument('--prompting', default=0,type=int)
+    
     parser.add_argument('--use_ot_intervention', action='store_true', help='use ot intervention', default=False)
     parser.add_argument('--alpha_ot', type=float, default=0.1, help='alpha, intervention strength')
 
@@ -222,7 +227,17 @@ def main():
             test_file = f'splits/{args.train_dataset}/fold_{i}_{args.use_mode}_seed_{args.seed}.csv'
         else:
             test_file = PATHs[args.eval_dataset]
-        
+
+        many_shot_prefix = ""
+        if args.prompting > 0:
+            train_file = f'splits/{args.train_dataset}/fold_{i}_train_seed_{args.seed}.csv'
+            frame = utilities.load_questions(filename=train_file)       
+            for idx in range(min(args.prompting, len(frame.index))): 
+                many_shot_prefix += format_prompt_with_answer_strings(frame.loc[idx]["Question"], frame.loc[idx]["Best Answer"], 'null', format='general')
+                if idx != min(args.prompting, len(frame.index)) - 1:
+                    many_shot_prefix += '\n\n'
+            filename = f'shot{args.prompting}_' + filename
+
         output_path = f'results_dump/{args.eval_dataset}/{args.instruction_prompt}_iti/answer_dump/{args.use_mode}/{filename}.csv'
         summary_path = f'results_dump/{args.eval_dataset}/{args.instruction_prompt}_iti/summary_dump/{args.use_mode}/{filename}.csv'
         os.makedirs(os.path.dirname(output_path), exist_ok=True)
@@ -238,7 +253,8 @@ def main():
             intervention_fn=lt_modulated_vector_add, 
             instruction_prompt=args.instruction_prompt,
             judge_name=args.judge_name, 
-            info_name=args.info_name
+            info_name=args.info_name,
+            many_shot_prefix=many_shot_prefix
         )
 
         print(f"FOLD {i}")
