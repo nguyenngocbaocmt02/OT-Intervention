@@ -353,7 +353,7 @@ def main():
                     many_shot_prefix += format_prompt_with_answer_strings(frame.loc[idx]["Question"], frame.loc[idx]["Best Answer"], 'null', format='general')
                     if idx != min(args.prompting, len(frame.index)) - 1:
                         many_shot_prefix += '\n\n'
-                file_name = f'shot{args.prompting}_' + file_name
+                filename = f'shot{args.prompting}_' + filename
 
 
             output_path = f'results_dump/{eval_dataset}/{args.exp}_{args.instruction_prompt}_ours/answer_dump/{mode}/{filename}.csv'

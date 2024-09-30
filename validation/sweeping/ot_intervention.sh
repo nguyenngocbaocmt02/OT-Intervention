@@ -13,11 +13,11 @@ SAVE="/big_storage/baonn/clf"
 # HF_NAMES = {llama_7B'
 # 'alpaca_7B', 'vicuna_7B', 'llama2_chat_13B', 'llama3_8B'
 # TEST
-for MODEL in llama2_chat_13B; do
-    for alpha in 15 25; do
+for MODEL in llama_7B; do
+    for alpha in 17 20; do
         for bl in 2.5; do
             echo "model: $MODEL alpha: $alpha bl: $bl"
-            CUDA_VISIBLE_DEVICES=2,3 python ot_edit_layer.py --instruction_prompt default --exp_mode test --clf_only 0 --exp test4 --model_name $MODEL --bl $bl --alpha $alpha --device 0 --num_fold 2 --judge_name $JUDGE --info_name $INFO --eval_dataset $EVAL_DATASET --train_dataset $TRAIN_DATASET --clf_folder $SAVE
+            CUDA_VISIBLE_DEVICES=1 python ot_edit_layer.py --instruction_prompt default --exp_mode test --clf_only 0 --exp test4 --model_name $MODEL --bl $bl --alpha $alpha --device 0 --num_fold 2 --judge_name $JUDGE --info_name $INFO --eval_dataset $EVAL_DATASET --train_dataset $TRAIN_DATASET --clf_folder $SAVE
             echo
             echo
         done
