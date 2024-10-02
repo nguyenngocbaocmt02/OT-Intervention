@@ -1,7 +1,7 @@
 MODEL=llama_7B
-#JUDGE=ft:davinci-002:ethicalytics:truthful:A0WsrZ0l # TruthfulQA
-JUDGE=ft:davinci-002:ethicalytics::9t5UpZFx  ## NQOpen
-INFO=ft:davinci-002:ethicalytics:informative:A0WuCDTp
+
+JUDGE=
+INFO=
 LOG_FILE="sweep_output.log"
 EVAL_DATASET="nqopen"
 TRAIN_DATASET="truthful_qa"
