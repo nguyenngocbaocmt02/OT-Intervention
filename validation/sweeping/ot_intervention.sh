@@ -1,12 +1,11 @@
 MODEL=llama_7B
-# INFO=ft:davinci-002:ethicalytics::9Rh9PRe7
-# JUDGE=ft:davinci-002:ethicalytics::9RgySkJq
-JUDGE=ft:davinci-002:ethicalytics:truthful:A0WsrZ0l
-INFO=ft:davinci-002:ethicalytics:informative:A0WuCDTp
+
+JUDGE=
+INFO=
 LOG_FILE="sweep_output.log"
 EVAL_DATASET="truthful_qa"
 TRAIN_DATASET="truthful_qa"
-SAVE="/big_storage/baonn/clf"
+SAVE=
 ##################################################
 #################   Ours   #######################
 ##################################################  
