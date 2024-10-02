@@ -32,9 +32,9 @@ HF_NAMES = {
 }
 
 REPOS = {
-    'nqopen' : "baonn/nqopen",
+    'nqopen' : "nqopen",
     'truthful_qa' : "truthful_qa",
-    'trivia_qa': "baonn/trivia_qa"
+    'trivia_qa': "trivia_qa"
 }
 
 def main(): 

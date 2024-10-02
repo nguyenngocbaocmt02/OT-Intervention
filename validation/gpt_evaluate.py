@@ -14,10 +14,10 @@ from utils import run_ce_loss, run_kl_wrt_orig
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--model", default="llama_7B", type=str)
-    parser.add_argument("--file", default="/home/baocmt/test.csv", type=str)
-    parser.add_argument("--output_file", default="/home/baocmt/lofit/lofit_llama_7B_fold1.csv", type=str)
-    parser.add_argument("--judge_name", type=str, default="ft:davinci-002:ethicalytics:truthful:A0WsrZ0l")
-    parser.add_argument("--info_name", type=str, default="ft:davinci-002:ethicalytics:informative:A0WuCDTp")
+    parser.add_argument("--file", default="", type=str)
+    parser.add_argument("--output_file", default="", type=str)
+    parser.add_argument("--judge_name", type=str, default="")
+    parser.add_argument("--info_name", type=str, default="")
     args = parser.parse_args()
     model = args.model
     file = args.file

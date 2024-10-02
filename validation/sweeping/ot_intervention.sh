@@ -26,4 +26,4 @@ done
 ##################################################
 #################   ARGS    ######################
 ##################################################
-# llama_7B --use_mode val --num_heads 48 --alpha 15 --device 0 --num_fold 2 --use_center_of_mass --judge_name ft:davinci-002:ethicalytics::9Rh9PRe7 --info_name ft:davinci-002:ethicalytics::9RgySkJq --eval_dataset truthful_qa --train_dataset truthful_qa
+# llama_7B --use_mode val --num_heads 48 --alpha 15 --device 0 --num_fold 2 --use_center_of_mass --judge_name --info_name --eval_dataset truthful_qa --train_dataset truthful_qa
