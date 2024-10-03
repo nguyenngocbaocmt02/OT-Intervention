@@ -122,7 +122,7 @@ def format_best(best_ans, close=True):
 
     """Formats best answer to match format of reference answers"""
 
-    best = best_ans.strip()
+    best = str(best_ans).strip()
     if close:
         if best[-1] != '.':
             best = best + '.'

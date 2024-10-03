@@ -45,6 +45,12 @@ ENGINE_MAP = {
     'llama3_70B': 'meta-llama/Meta-Llama-3-70B',
     'llama3_70B_instruct': 'meta-llama/Meta-Llama-3-70B-Instruct',
     'gemma_2_2B': 'google/gemma-2-2b',
+    'llama_7B_lofit_fold_0': 'huggyllama/llama-7b',
+    'llama_7B_lofit_fold_1': 'huggyllama/llama-7b',
+    'llama2_chat_13B_lofit_fold_0': 'meta-llama/Llama-2-13b-chat-hf',
+    'llama2_chat_13B_lofit_fold_1': 'meta-llama/Llama-2-13b-chat-hf',
+    'llama3_8B_lofit_fold_0': 'meta-llama/Meta-Llama-3-8B',
+    'llama3_8B_lofit_fold_1': 'meta-llama/Meta-Llama-3-8B',
 }
 
 from truthfulqa.evaluate import data_to_dict, format_frame
@@ -166,11 +172,14 @@ def get_llama_activations_bau(model, prompt, device):
             output = model(prompt, output_hidden_states = True)
         hidden_states = output.hidden_states
         hidden_states = torch.stack(hidden_states, dim = 0).squeeze()
-        hidden_states = hidden_states.detach().cpu().numpy()
+        try:
+            hidden_states = hidden_states.detach().cpu().numpy()
+        except:
+            hidden_states = hidden_states.detach().float().cpu().numpy()
         head_wise_hidden_states = [ret[head].output.squeeze().detach().cpu() for head in HEADS]
-        head_wise_hidden_states = torch.stack(head_wise_hidden_states, dim = 0).squeeze().numpy()
+        head_wise_hidden_states = torch.stack(head_wise_hidden_states, dim = 0).squeeze().float().numpy()
         mlp_wise_hidden_states = [ret[mlp].output.squeeze().detach().cpu() for mlp in MLPS]
-        mlp_wise_hidden_states = torch.stack(mlp_wise_hidden_states, dim = 0).squeeze().numpy()
+        mlp_wise_hidden_states = torch.stack(mlp_wise_hidden_states, dim = 0).squeeze().float().numpy()
 
     return hidden_states, head_wise_hidden_states, mlp_wise_hidden_states
 
@@ -538,7 +547,7 @@ def alt_tqa_evaluate(models, metric_names, input_path, output_path, summary_path
     Outputs a pd dataframe with summary values
     """
 
-    questions = utilities.load_questions(filename=input_path)
+    questions = utilities.load_questions(filename=input_path).head(1000)
 
     print("ASSUMES OPENAI_API_KEY ENVIRONMENT VARIABLE IS SET")
     import os

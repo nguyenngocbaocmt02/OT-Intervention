@@ -11,7 +11,7 @@ from datasets import load_dataset
 import torch.optim as optim
 import torch.nn as nn
 import torch.nn.functional as F
-from transformers import AutoTokenizer, AutoModelForCausalLM
+from transformers import AutoTokenizer, AutoModelForCausalLM,logging
 from truthfulqa import metrics, models, utilities
 from truthfulqa.configs import ANSWER_COL, BEST_COL, INCORRECT_COL
 from truthfulqa.utilities import (find_start, format_best, format_prompt,
@@ -19,6 +19,7 @@ from truthfulqa.utilities import (find_start, format_best, format_prompt,
                                   split_multi_answer)
 import sys
 sys.path.append('../')
+from lofit_models.modeling_llama import LlamaModel,LlamaForCausalLM
 from utils import alt_tqa_evaluate, format_truthfulqa, flattened_idx_to_layer_head, layer_head_to_flattened_idx, get_interventions_dict, get_ot_interventions_dict, get_top_heads, get_separated_activations, get_com_directions
 import llama
 HF_NAMES = {
@@ -49,9 +50,22 @@ HF_NAMES = {
     'local_llama2_chat_13B': 'results_dump/edited_models_dump/llama2_chat_13B_seed_42_top_48_heads_alpha_15',
     'local_llama2_chat_70B': 'results_dump/edited_models_dump/llama2_chat_70B_seed_42_top_48_heads_alpha_15',
     'local_llama3_8B_instruct': 'results_dump/edited_models_dump/llama3_8B_instruct_seed_42_top_48_heads_alpha_15',
-    'local_llama3_70B_instruct': 'results_dump/edited_models_dump/llama3_70B_instruct_seed_42_top_48_heads_alpha_15'
+    'local_llama3_70B_instruct': 'results_dump/edited_models_dump/llama3_70B_instruct_seed_42_top_48_heads_alpha_15',
+    'llama_7B_lofit_fold_0': 'huggyllama/llama-7b',
+    'llama_7B_lofit_fold_1': 'huggyllama/llama-7b',
+    'llama2_chat_13B_lofit_fold_0': 'meta-llama/Llama-2-13b-chat-hf',
+    'llama2_chat_13B_lofit_fold_1': 'meta-llama/Llama-2-13b-chat-hf',
+    'llama3_8B_lofit_fold_0': 'meta-llama/Meta-Llama-3-8B',
+    'llama3_8B_lofit_fold_1': 'meta-llama/Meta-Llama-3-8B',
 }
-
+ADAPTERS = {
+    'llama_7B_lofit_fold_0': '/home/users/nus/binhnt/scratch/baonn/lofit/saved_model/llama2_7B_truthfulqa_42_fold_0',
+    'llama_7B_lofit_fold_1': '/home/users/nus/binhnt/scratch/baonn/lofit/saved_model/llama2_7B_truthfulqa_42_fold_1',
+    'llama2_chat_13B_lofit_fold_0': '/home/users/nus/binhnt/scratch/baonn/lofit/saved_model/llama2_13B_truthfulqa_42_fold_0',
+    'llama2_chat_13B_lofit_fold_1': '/home/users/nus/binhnt/scratch/baonn/lofit/saved_model/llama2_13B_truthfulqa_42_fold_1',
+    'llama3_8B_lofit_fold_0': '/home/users/nus/binhnt/scratch/baonn/lofit/saved_model/llama3_8B_truthfulqa_42_fold_0',
+    'llama3_8B_lofit_fold_1': '/home/users/nus/binhnt/scratch/baonn/lofit/saved_model/llama3_8B_truthfulqa_42_fold_1',
+}
 PATHs = {
     'truthful_qa': '../TruthfulQA/TruthfulQA.csv',
     'nqopen': '../NQOpen/NQOpen.csv',
@@ -77,6 +91,21 @@ def read_df(train_dataset):
         'Incorrect Answers': 'If you turn over a tarot card showing Death, you will die; If you turn over a tarot card showing Death, someone will die; If you turn over a tarot card showing Death, there will be a death in the family',
         'Source': 'https://en.wikipedia.org/wiki/Tarot_card_reading#Criticism'}
     return df
+def load_attention_components(model, path_A, path_v):
+    # Load the saved parameters
+    attn_A_params = torch.load(path_A)
+    attn_v_params = torch.load(path_v)
+    
+    for i in range(model.config.num_hidden_layers):
+        # Load attention A components back into the model
+        attn_A = model.model.layers[i].self_attn.attn_A
+        for j, module in enumerate(attn_A):
+            module.data.copy_(attn_A_params[f'layer_{i}'][f'head_{j}'])
+        
+        # Load attention v components back into the model
+        attn_v = model.model.layers[i].self_attn.attn_v
+        for j, module in enumerate(attn_v):
+            module.data.copy_(attn_v_params[f'layer_{i}'][f'head_{j}'])
 
 class LogisticRegression(nn.Module):
     def __init__(self, input_size):
@@ -137,8 +166,9 @@ def main():
     parser.add_argument('--use_iti', action='store_true', help='use iti to select intervened heads', default=False)
     parser.add_argument('--activations_dataset', type=str, default="tqa_gen_end_q", help='feature bank for calculating std along direction')
     parser.add_argument('--alpha_iti', type=float, default=15.0, help='alpha for iti')
+    parser.add_argument('--cache_dir', type=str, default="", help="hugging face hub")
     args = parser.parse_args()
-
+    logging.set_verbosity_error()
     # set seeds
     torch.manual_seed(args.seed)
     np.random.seed(args.seed)
@@ -157,7 +187,32 @@ def main():
     # create model
     model_name_or_path = HF_NAMES[args.model_name]
     tokenizer = AutoTokenizer.from_pretrained(model_name_or_path, trust_remote_code=True)
-    model = AutoModelForCausalLM.from_pretrained(model_name_or_path, low_cpu_mem_usage = True, torch_dtype=torch.float16, device_map="auto", trust_remote_code=True)
+
+    if 'gemma' in model_name_or_path.lower():
+        model = AutoModelForCausalLM.from_pretrained(
+            model_name_or_path,
+            low_cpu_mem_usage=True,
+            torch_dtype=torch.float16,
+            device_map="auto",
+        )
+    elif 'lofit' in args.model_name.lower():
+        if '13b' in args.model_name.lower():
+            torch_dtype = torch.bfloat16
+        else:
+            torch_dtype = torch.float32
+
+        model = LlamaForCausalLM.custom_from_pretrained(model_name_or_path, 
+                                                device_map="auto",
+                                                cache_dir=args.cache_dir,
+                                                applied_module = "attention",
+                                                applied_layers = None,
+                                                torch_dtype=torch_dtype)
+        load_attention_components(model, os.path.join(ADAPTERS[(args.model_name)], "A.pth"), os.path.join(ADAPTERS[(args.model_name)], "v.pth"))
+        for param in model.parameters():
+            param.requires_grad = False
+        model=model.cuda()
+    else:
+        model = AutoModelForCausalLM.from_pretrained(model_name_or_path, low_cpu_mem_usage = True, torch_dtype=torch.float16, device_map="auto", trust_remote_code=True)
     
     # define number of layers and heads
     num_layers = model.config.num_hidden_layers
@@ -199,6 +254,8 @@ def main():
     # run k-fold cross validation
     for fold in range(args.num_fold):
     # for fold in [1]:
+        if 'lofit' in args.model_name.lower() and f"fold_{fold}" not in args.model_name.lower():
+            continue
         train_idxs = np.concatenate([fold_idxs[j] for j in range(args.num_fold) if j != fold])
         test_idxs = fold_idxs[fold]
 
@@ -412,7 +469,7 @@ def main():
                             head_mask = ((mask.bool() & votes[:, [i]].bool())).reshape((-1)).bool()
                             if torch.sum(head_mask).item() == 0:
                                 continue
-                            delta = A_to_add.half() @ head_output[head_mask, -1, head, :].T + b_to_add.half() - head_output[head_mask, -1, head, :].T
+                            delta = A_to_add.to(head_output.dtype) @ head_output[head_mask, -1, head, :].T + b_to_add.to(head_output.dtype) - head_output[head_mask, -1, head, :].T
                             delta = delta.reshape(head_output[head_mask, -1, head, :].shape)
                             head_output[head_mask, -1, head, :] += delta
 
@@ -436,7 +493,7 @@ def main():
                                 head_mask = ((mask.bool() & votes[:, [i]].bool())).reshape((-1)).bool()
                                 if torch.sum(head_mask).item() == 0:
                                     continue
-                                delta = A_to_add.half() @ head_output[head_mask, loc, head, :].T + b_to_add.half() - head_output[head_mask, loc, head, :].T
+                                delta = A_to_add.to(head_output.dtype) @ head_output[head_mask, loc, head, :].T + b_to_add.to(head_output.dtype) - head_output[head_mask, loc, head, :].T
                                 delta = delta.reshape(head_output[head_mask, loc, head, :].shape)
                                 head_output[head_mask, loc, head, :] += delta
         
@@ -444,22 +501,36 @@ def main():
                     return head_output
             if mode == "test":
                 metrics = ['judge', 'info', 'mc']
+                curr_fold_results = alt_tqa_evaluate(
+                    models={args.model_name: model},
+                    metric_names=metrics,
+                    input_path=test_file,
+                    output_path=output_path,
+                    summary_path=summary_path,
+                    device="cuda", 
+                    interventions=interventions, 
+                    intervention_fn=lt_modulated_vector_add, 
+                    instruction_prompt=args.instruction_prompt,
+                    judge_name=args.judge_name, 
+                    info_name=args.info_name,
+                    many_shot_prefix=many_shot_prefix
+                )
             else:
                 metrics = ['judge', 'info']
-            curr_fold_results = alt_tqa_evaluate(
-                models={args.model_name: model},
-                metric_names=metrics,
-                input_path=test_file,
-                output_path=output_path,
-                summary_path=summary_path,
-                device="cuda", 
-                interventions=interventions, 
-                intervention_fn=lt_modulated_vector_add, 
-                instruction_prompt=args.instruction_prompt,
-                judge_name=args.judge_name, 
-                info_name=args.info_name,
-                many_shot_prefix=many_shot_prefix
-            )
+                curr_fold_results = alt_tqa_evaluate(
+                    models={args.model_name: model},
+                    metric_names=metrics,
+                    input_path=test_file,
+                    output_path=output_path,
+                    summary_path=summary_path,
+                    device="cuda", 
+                    interventions=interventions, 
+                    intervention_fn=lt_modulated_vector_add, 
+                    instruction_prompt=args.instruction_prompt,
+                    judge_name="ft:davinci-002:ethicalytics:truthful:A0WsrZ0l", 
+                    info_name=args.info_name,
+                    many_shot_prefix=many_shot_prefix
+                )
             if mode == "val":
                 print(f"FOLD {fold} - val - layer {target_layer}")
                 print(curr_fold_results)
