@@ -46,9 +46,9 @@ ADAPTERS = {
 }
 
 REPOS = {
-    'nqopen' : "baonn/nqopen",
+    'nqopen' : "nqopen",
     'truthful_qa' : "truthful_qa",
-    'trivia_qa': "baonn/trivia_qa"
+    'trivia_qa': "trivia_qa"
 }
 
 def load_attention_components(model, path_A, path_v):
