@@ -538,7 +538,7 @@ def alt_tqa_evaluate(models, metric_names, input_path, output_path, summary_path
     Outputs a pd dataframe with summary values
     """
 
-    questions = utilities.load_questions(filename=input_path)
+    questions = utilities.load_questions(filename=input_path).head(1000)
 
     print("ASSUMES OPENAI_API_KEY ENVIRONMENT VARIABLE IS SET")
     import os

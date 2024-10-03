@@ -14,26 +14,16 @@ TRAIN_DATASET="truthful_qa"
 #TEST
 
 for MODEL in llama_7B; do
-    for alpha in 0; do
-        for K in 0; do
+    for alpha in 15; do
+        for K in 48; do
             echo "model: $MODEL alpha: $alpha K: $K"
-            CUDA_VISIBLE_DEVICES=2 python validate_2fold.py --instruction_prompt default --model_name $MODEL --use_mode test --num_heads $K --alpha_ot $alpha --device 0 --num_fold 2 --use_center_of_mass --judge_name $JUDGE --info_name $INFO --eval_dataset $EVAL_DATASET --train_dataset $TRAIN_DATASET
+            CUDA_VISIBLE_DEVICES=0 python validate_2fold.py --instruction_prompt informative --model_name $MODEL --use_mode test --num_heads $K --alpha_ot $alpha --device 0 --num_fold 2 --use_center_of_mass --judge_name $JUDGE --info_name $INFO --eval_dataset $EVAL_DATASET --train_dataset $TRAIN_DATASET
             echo
             echo
         done
     done
 done
 
-for MODEL in llama_7B; do
-    for alpha in 15; do
-        for K in 48; do
-            echo "model: $MODEL alpha: $alpha K: $K"
-            CUDA_VISIBLE_DEVICES=2 python validate_2fold.py --instruction_prompt default --model_name $MODEL --use_mode test --num_heads $K --alpha_ot $alpha --device 0 --num_fold 2 --use_center_of_mass --judge_name $JUDGE --info_name $INFO --eval_dataset $EVAL_DATASET --train_dataset $TRAIN_DATASET
-            echo
-            echo
-        done
-    done
-done
 ##################################################
 #################   UNINTERVENED    ##############
 ##################################################
