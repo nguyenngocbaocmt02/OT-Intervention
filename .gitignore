@@ -52,6 +52,7 @@ coverage.xml
 cover/
 toxic/results_dump
 toxic/DExperts
+Toxic/
 # Translations
 *.mo
 *.pot
