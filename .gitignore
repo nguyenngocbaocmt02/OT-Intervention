@@ -50,7 +50,8 @@ coverage.xml
 .hypothesis/
 .pytest_cache/
 cover/
-
+toxic/results_dump
+toxic/DExperts
 # Translations
 *.mo
 *.pot

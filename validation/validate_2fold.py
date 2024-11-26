@@ -8,14 +8,16 @@ import pandas as pd
 import numpy as np
 import argparse
 from datasets import load_dataset
-from transformers import AutoTokenizer, AutoModel, AutoModelForCausalLM, AutoConfig
+from transformers import AutoTokenizer, AutoModel, AutoModelForCausalLM, AutoConfig, logging
 from truthfulqa import metrics, models, utilities
 from truthfulqa.configs import ANSWER_COL, BEST_COL, INCORRECT_COL
 from truthfulqa.utilities import (find_start, format_best, format_prompt,
                                   format_prompt_with_answer_strings,
                                   split_multi_answer)
+
 import sys
 sys.path.append('../')
+from lofit_models.modeling_llama import LlamaModel,LlamaForCausalLM
 from utils import alt_tqa_evaluate, flattened_idx_to_layer_head, layer_head_to_flattened_idx, get_interventions_dict, get_top_heads, get_separated_activations, get_com_directions, get_ot_interventions_dict
 import llama
 
@@ -33,6 +35,7 @@ HF_NAMES = {
     'llama3_70B': 'meta-llama/Meta-Llama-3-70B',
     'llama3_70B_instruct': 'meta-llama/Meta-Llama-3-70B-Instruct',
     'gemma_2_2B': 'google/gemma-2-2b',
+    'gpt2_large': 'openai-community/gpt2-large',
     # HF edited models (ITI baked-in)
     'honest_llama_7B': 'jujipotle/honest_llama_7B', # Heads=48, alpha=15
     # 'honest_llama2_chat_7B': 'likenneth/honest_llama2_chat_7B', # Heads=?, alpha=?
@@ -47,7 +50,21 @@ HF_NAMES = {
     'local_llama2_chat_13B': 'results_dump/edited_models_dump/llama2_chat_13B_seed_42_top_48_heads_alpha_15',
     'local_llama2_chat_70B': 'results_dump/edited_models_dump/llama2_chat_70B_seed_42_top_48_heads_alpha_15',
     'local_llama3_8B_instruct': 'results_dump/edited_models_dump/llama3_8B_instruct_seed_42_top_48_heads_alpha_15',
-    'local_llama3_70B_instruct': 'results_dump/edited_models_dump/llama3_70B_instruct_seed_42_top_48_heads_alpha_15'
+    'local_llama3_70B_instruct': 'results_dump/edited_models_dump/llama3_70B_instruct_seed_42_top_48_heads_alpha_15',
+    'llama_7B_lofit_fold_0': 'huggyllama/llama-7b',
+    'llama_7B_lofit_fold_1': 'huggyllama/llama-7b',
+    'llama2_chat_13B_lofit_fold_0': 'meta-llama/Llama-2-13b-chat-hf',
+    'llama2_chat_13B_lofit_fold_1': 'meta-llama/Llama-2-13b-chat-hf',
+    'llama3_8B_lofit_fold_0': 'meta-llama/Meta-Llama-3-8B',
+    'llama3_8B_lofit_fold_1': 'meta-llama/Meta-Llama-3-8B',
+}
+ADAPTERS = {
+    'llama_7B_lofit_fold_0': '/home/users/nus/binhnt/scratch/baonn/lofit/saved_model/llama2_7B_truthfulqa_42_fold_0',
+    'llama_7B_lofit_fold_1': '/home/users/nus/binhnt/scratch/baonn/lofit/saved_model/llama2_7B_truthfulqa_42_fold_1',
+    'llama2_chat_13B_lofit_fold_0': '/home/users/nus/binhnt/scratch/baonn/lofit/saved_model/llama2_13B_truthfulqa_42_fold_0',
+    'llama2_chat_13B_lofit_fold_1': '/home/users/nus/binhnt/scratch/baonn/lofit/saved_model/llama2_13B_truthfulqa_42_fold_1',
+    'llama3_8B_lofit_fold_0': '/home/users/nus/binhnt/scratch/baonn/lofit/saved_model/llama3_8B_truthfulqa_42_fold_0',
+    'llama3_8B_lofit_fold_1': '/home/users/nus/binhnt/scratch/baonn/lofit/saved_model/llama3_8B_truthfulqa_42_fold_1',
 }
 
 PATHs = {
@@ -76,6 +93,22 @@ def read_df(train_dataset):
         'Source': 'https://en.wikipedia.org/wiki/Tarot_card_reading#Criticism'}
     return df
 
+def load_attention_components(model, path_A, path_v):
+    # Load the saved parameters
+    attn_A_params = torch.load(path_A)
+    attn_v_params = torch.load(path_v)
+    
+    for i in range(model.config.num_hidden_layers):
+        # Load attention A components back into the model
+        attn_A = model.model.layers[i].self_attn.attn_A
+        for j, module in enumerate(attn_A):
+            module.data.copy_(attn_A_params[f'layer_{i}'][f'head_{j}'])
+        
+        # Load attention v components back into the model
+        attn_v = model.model.layers[i].self_attn.attn_v
+        for j, module in enumerate(attn_v):
+            module.data.copy_(attn_v_params[f'layer_{i}'][f'head_{j}'])
+
 def main(): 
     parser = argparse.ArgumentParser()
     parser.add_argument('--model_name', type=str, default='llama_7B', choices=HF_NAMES.keys(), help='model name')
@@ -100,9 +133,9 @@ def main():
     
     parser.add_argument('--use_ot_intervention', action='store_true', help='use ot intervention', default=False)
     parser.add_argument('--alpha_ot', type=float, default=0.1, help='alpha, intervention strength')
-
+    parser.add_argument('--cache_dir', type=str, default="", help="hugging face hub")
     args = parser.parse_args()
-
+    logging.set_verbosity_error()
     # set seeds
     torch.manual_seed(args.seed)
     np.random.seed(args.seed)
@@ -129,8 +162,30 @@ def main():
             torch_dtype=torch.float16,
             device_map="auto",
         )
+    elif 'lofit' in (args.model_prefix + args.model_name).lower():
+        if '13b' in args.model_name.lower():
+            torch_dtype = torch.bfloat16
+        else:
+            torch_dtype = torch.float32
+
+        model = LlamaForCausalLM.custom_from_pretrained(model_name_or_path, 
+                                                device_map="auto",
+                                                cache_dir=args.cache_dir,
+                                                applied_module = "attention",
+                                                applied_layers = None,
+                                                torch_dtype=torch_dtype)
+        load_attention_components(model, os.path.join(ADAPTERS[(args.model_prefix + args.model_name)], "A.pth"), os.path.join(ADAPTERS[(args.model_prefix + args.model_name)], "v.pth"))
+        for param in model.parameters():
+            param.requires_grad = False
+        model=model.cuda()
     else:
         model = AutoModelForCausalLM.from_pretrained(model_name_or_path, low_cpu_mem_usage = True, torch_dtype=torch.float16, device_map="auto", trust_remote_code=True)
+    
+    # template of the intervened components:
+    if "gpt" in args.model_name:
+        template_intervened = "transformer.h.{layer}.attn.c_proj"
+    else:
+        template_intervened = "model.layers.{layer}.self_attn.o_proj"
 
     # define number of layers and heads
     num_layers = model.config.num_hidden_layers
@@ -150,7 +205,8 @@ def main():
     # run k-fold cross validation
     results = []
     for i in range(args.num_fold):
-
+        if 'lofit' in args.model_name.lower() and f"fold_{i}" not in args.model_name.lower():
+            continue
         train_idxs = np.concatenate([fold_idxs[j] for j in range(args.num_fold) if j != i])
         test_idxs = fold_idxs[i]
 
@@ -180,7 +236,7 @@ def main():
             y_train = 1 - np.concatenate([separated_labels[i] for i in train_set_idxs], axis = 0)
             used_labels = torch.tensor(y_train, dtype=torch.float32) 
             save_folder = f'ot_save/iti/{args.train_dataset}/{args.model_name}_seed_{args.seed}_alpha_{args.alpha_ot}_fold_{i}_top_{args.num_heads}'
-            interventions = get_ot_interventions_dict(top_heads, probes, used_activations, used_labels, 0, num_heads, save_folder, alpha=args.alpha_ot)
+            interventions = get_ot_interventions_dict(top_heads, probes, used_activations, used_labels, 0, num_heads, save_folder, alpha=args.alpha_ot, template_intervened=template_intervened)
             
             def lt_modulated_vector_add(head_output, layer_name, start_edit_location='lt'): 
                 head_output = rearrange(head_output, 'b s (h d) -> b s h d', h=num_heads)
@@ -200,7 +256,7 @@ def main():
                 head_output = rearrange(head_output, 'b s h d -> b s (h d)')
                 return head_output
         else:
-            interventions = get_interventions_dict(top_heads, probes, tuning_activations, num_heads, args.use_center_of_mass, args.use_random_dir, com_directions)
+            interventions = get_interventions_dict(top_heads, probes, tuning_activations, num_heads, args.use_center_of_mass, args.use_random_dir, com_directions, template_intervened=template_intervened)
 
             def lt_modulated_vector_add(head_output, layer_name, start_edit_location='lt'): 
                 head_output = rearrange(head_output, 'b s (h d) -> b s h d', h=num_heads)

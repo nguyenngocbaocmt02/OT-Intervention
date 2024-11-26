@@ -7,7 +7,7 @@ import csv
 import pickle
 import warnings
 from functools import partial
-
+import json
 import cvxpy as cp
 import numpy as np
 import openai
@@ -29,7 +29,7 @@ from tqdm import tqdm
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from truthfulqa import metrics, models, utilities
 from truthfulqa.configs import ANSWER_COL, BEST_COL, INCORRECT_COL
-
+from perspective import summary_pers, initialize_client, fluency_and_diversity, process_row_perspective_tup
 import llama
 
 ENGINE_MAP = {
@@ -45,6 +45,13 @@ ENGINE_MAP = {
     'llama3_70B': 'meta-llama/Meta-Llama-3-70B',
     'llama3_70B_instruct': 'meta-llama/Meta-Llama-3-70B-Instruct',
     'gemma_2_2B': 'google/gemma-2-2b',
+    'gpt2_large': 'openai-community/gpt2-large',
+    'llama_7B_lofit_fold_0': 'huggyllama/llama-7b',
+    'llama_7B_lofit_fold_1': 'huggyllama/llama-7b',
+    'llama2_chat_13B_lofit_fold_0': 'meta-llama/Llama-2-13b-chat-hf',
+    'llama2_chat_13B_lofit_fold_1': 'meta-llama/Llama-2-13b-chat-hf',
+    'llama3_8B_lofit_fold_0': 'meta-llama/Meta-Llama-3-8B',
+    'llama3_8B_lofit_fold_1': 'meta-llama/Meta-Llama-3-8B',
 }
 
 from truthfulqa.evaluate import data_to_dict, format_frame
@@ -156,7 +163,50 @@ def tokenized_tqa_gen(dataset, tokenizer):
     return all_prompts, all_labels, all_categories
 
 
-def get_llama_activations_bau(model, prompt, device): 
+def get_llama_activations_bau(model, prompt, device):
+    HEADS = [f"model.layers.{i}.self_attn.o_proj" for i in range(model.config.num_hidden_layers)]
+    MLPS = [f"model.layers.{i}.mlp" for i in range(model.config.num_hidden_layers)]
+
+    with torch.no_grad():
+        prompt = prompt.to(device)
+        with TraceDict(model, HEADS+MLPS) as ret:
+            output = model(prompt, output_hidden_states = True)
+        hidden_states = output.hidden_states
+        hidden_states = torch.stack(hidden_states, dim = 0).squeeze()
+        try:
+            hidden_states = hidden_states.detach().cpu().numpy()
+        except:
+            hidden_states = hidden_states.detach().float().cpu().numpy()
+        head_wise_hidden_states = [ret[head].output.squeeze().detach().cpu() for head in HEADS]
+        head_wise_hidden_states = torch.stack(head_wise_hidden_states, dim = 0).squeeze().float().numpy()
+        mlp_wise_hidden_states = [ret[mlp].output.squeeze().detach().cpu() for mlp in MLPS]
+        mlp_wise_hidden_states = torch.stack(mlp_wise_hidden_states, dim = 0).squeeze().float().numpy()
+
+    return hidden_states, head_wise_hidden_states, mlp_wise_hidden_states
+
+def get_gpt_activations_bau(model, prompt, device):
+    HEADS = [f"transformer.h.{i}.attn.c_proj" for i in range(model.config.num_hidden_layers)]
+    MLPS = [f"transformer.h.{i}.mlp" for i in range(model.config.num_hidden_layers)]
+
+    with torch.no_grad():
+        prompt = prompt.to(device)
+        with TraceDict(model, HEADS+MLPS) as ret:
+            output = model(prompt, output_hidden_states = True)
+        hidden_states = output.hidden_states
+        hidden_states = torch.stack(hidden_states, dim = 0).squeeze()
+        try:
+            hidden_states = hidden_states.detach().cpu().numpy()
+        except:
+            hidden_states = hidden_states.detach().float().cpu().numpy()
+        head_wise_hidden_states = [ret[head].output.squeeze().detach().cpu() for head in HEADS]
+        head_wise_hidden_states = torch.stack(head_wise_hidden_states, dim = 0).squeeze().float().numpy()
+        mlp_wise_hidden_states = [ret[mlp].output.squeeze().detach().cpu() for mlp in MLPS]
+        mlp_wise_hidden_states = torch.stack(mlp_wise_hidden_states, dim = 0).squeeze().float().numpy()
+
+    return hidden_states, head_wise_hidden_states, mlp_wise_hidden_states
+
+def get_gemma_activations(model, prompt, device): 
+
     HEADS = [f"model.layers.{i}.self_attn.o_proj" for i in range(model.config.num_hidden_layers)]
     MLPS = [f"model.layers.{i}.mlp" for i in range(model.config.num_hidden_layers)]
 
@@ -167,7 +217,7 @@ def get_llama_activations_bau(model, prompt, device):
         hidden_states = output.hidden_states
         hidden_states = torch.stack(hidden_states, dim = 0).squeeze()
         hidden_states = hidden_states.detach().cpu().numpy()
-        head_wise_hidden_states = [ret[head].output.squeeze().detach().cpu() for head in HEADS]
+        head_wise_hidden_states = [ret[head].output[0].squeeze().detach().cpu() for head in HEADS]
         head_wise_hidden_states = torch.stack(head_wise_hidden_states, dim = 0).squeeze().numpy()
         mlp_wise_hidden_states = [ret[mlp].output.squeeze().detach().cpu() for mlp in MLPS]
         mlp_wise_hidden_states = torch.stack(mlp_wise_hidden_states, dim = 0).squeeze().numpy()
@@ -183,27 +233,6 @@ def get_llama_logits(model, prompt, device):
         logits = model(prompt).logits
         logits = logits.detach().cpu()
         return logits
-
-
-def get_gemma_activations(model, prompt, device): 
-
-    HEADS = [f"model.layers.{i}.self_attn.o_proj" for i in range(model.config.num_hidden_layers)]
-    MLPS = [f"model.layers.{i}.mlp" for i in range(model.config.num_hidden_layers)]
-
-    with torch.no_grad():
-        prompt = prompt.to(device)
-        with TraceDict(model, HEADS+MLPS) as ret:
-            output = model(prompt, output_hidden_states = True)
-        hidden_states = output.hidden_states
-        hidden_states = torch.stack(hidden_states, dim = 0).squeeze()
-        hidden_states = hidden_states.detach().cpu().numpy()
-        # pdb.set_trace()
-        head_wise_hidden_states = [ret[head].output[0].squeeze().detach().cpu() for head in HEADS]
-        head_wise_hidden_states = torch.stack(head_wise_hidden_states, dim = 0).squeeze().numpy()
-        mlp_wise_hidden_states = [ret[mlp].output.squeeze().detach().cpu() for mlp in MLPS]
-        mlp_wise_hidden_states = torch.stack(mlp_wise_hidden_states, dim = 0).squeeze().numpy()
-
-    return hidden_states, head_wise_hidden_states, mlp_wise_hidden_states
 
 
 def save_probes(probes, path): 
@@ -470,7 +499,7 @@ def run_ce_loss(model_key, model=None, tokenizer=None, device='cuda', interventi
 
 def run_kl_wrt_orig(model_key, model=None, tokenizer=None, device='cuda', interventions={}, intervention_fn=None, num_samples=100, separate_kl_device=None): 
 
-    assert 'llama' in model_key or 'alpaca' in model_key or 'vicuna' in model_key, 'model must be llama model'
+    assert 'llama' in model_key or 'alpaca' in model_key or 'vicuna' in model_key or 'gpt' in model_key or 'gemma' in model_key, 'model must be llama model'
 
     # load owt text
     # note this is tokenized with llama tokenizer
@@ -558,18 +587,18 @@ def alt_tqa_evaluate(models, metric_names, input_path, output_path, summary_path
 
         # gpt-2
         if mdl in ['gpt2', 'gpt2-xl']:
-            try:
-                print(questions)
-                questions = models.run_answers(questions, mdl, mdl, preset, device=device, cache_dir=cache_dir)
+            #try:
+            model = models[mdl]
+            questions = model.run_answers(questions, mdl, mdl, preset, device=device, cache_dir=cache_dir)
+            utilities.save_questions(questions, output_path)
+            if 'mc' in metric_names:
+                models.run_probs(questions, mdl, mdl, preset=preset, device=device, cache_dir=cache_dir)
                 utilities.save_questions(questions, output_path)
-                if 'mc' in metric_names:
-                    models.run_probs(questions, mdl, mdl, preset=preset, device=device, cache_dir=cache_dir)
-                    utilities.save_questions(questions, output_path)
-            except Exception as err:
-                print(err)
+            # except Exception as err:
+            #     print(err)
 
         # llama
-        if 'llama' in mdl or 'alpaca' in mdl or 'vicuna' in mdl:
+        if 'llama' in mdl or 'alpaca' in mdl or 'vicuna' in mdl or 'gemma' in mdl or 'gpt' in mdl:
             assert models[mdl] is not None, 'must provide llama model'
             llama_model = models[mdl]
             llama_tokenizer = AutoTokenizer.from_pretrained(ENGINE_MAP[mdl])
@@ -666,10 +695,14 @@ def alt_tqa_evaluate(models, metric_names, input_path, output_path, summary_path
         # if model_key not in questions.columns:
         #     warnings.warn("Answers missing for {0}!".format(model_key), stacklevel=2)
         #     continue
-        if 'llama' in model_key or 'alpaca' in model_key or 'vicuna' in model_key:
-            ce_loss = run_ce_loss(model_key, model=llama_model, tokenizer=llama_tokenizer, device=device, interventions=interventions, intervention_fn=intervention_fn)
-            kl_wrt_orig = run_kl_wrt_orig(model_key, model=llama_model, tokenizer=llama_tokenizer, device=device, interventions=interventions, intervention_fn=intervention_fn, separate_kl_device=separate_kl_device)
-
+        ce_loss = 100000
+        kl_wrt_orig = ce_loss
+        if 'llama' in mdl or 'alpaca' in mdl or 'vicuna' in mdl or 'gemma' in mdl or 'gpt' in mdl:
+            try:
+                ce_loss = run_ce_loss(model_key, model=llama_model, tokenizer=llama_tokenizer, device=device, interventions=interventions, intervention_fn=intervention_fn)
+                kl_wrt_orig = run_kl_wrt_orig(model_key, model=llama_model, tokenizer=llama_tokenizer, device=device, interventions=interventions, intervention_fn=intervention_fn, separate_kl_device=separate_kl_device)
+            except:
+                pass
         results.loc[model_key, 'CE Loss'] = ce_loss
         results.loc[model_key, 'KL wrt Orig'] = kl_wrt_orig
 
@@ -725,11 +758,11 @@ def get_top_heads(train_idxs, val_idxs, separated_activations, separated_labels,
 
     return top_heads, probes
 
-def get_interventions_dict(top_heads, probes, tuning_activations, num_heads, use_center_of_mass, use_random_dir, com_directions): 
+def get_interventions_dict(top_heads, probes, tuning_activations, num_heads, use_center_of_mass, use_random_dir, com_directions, template_intervened): 
 
     interventions = {}
     for layer, head in top_heads: 
-        interventions[f"model.layers.{layer}.self_attn.o_proj"] = []
+        interventions[template_intervened.format(layer=layer)] = []
     for layer, head in top_heads:
         if use_center_of_mass: 
             direction = com_directions[layer_head_to_flattened_idx(layer, head, num_heads)]
@@ -741,10 +774,10 @@ def get_interventions_dict(top_heads, probes, tuning_activations, num_heads, use
         activations = tuning_activations[:,layer,head,:] # batch x 128
         proj_vals = activations @ direction.T
         proj_val_std = np.std(proj_vals)
-        interventions[f"model.layers.{layer}.self_attn.o_proj"].append((head, direction.squeeze(), proj_val_std))
+        interventions[template_intervened.format(layer=layer)].append((head, direction.squeeze(), proj_val_std))
 
     for layer, head in top_heads: 
-        interventions[f"model.layers.{layer}.self_attn.o_proj"] = sorted(interventions[f"model.layers.{layer}.self_attn.o_proj"], key = lambda x: x[0])
+        interventions[template_intervened.format(layer=layer)] = sorted(interventions[template_intervened.format(layer=layer)], key = lambda x: x[0])
     return interventions
 
 def get_separated_activations(labels, head_wise_activations): 
@@ -831,13 +864,13 @@ def compute_A_opt(covsa, cov_opt):
     A_opt = covsa_inv_sqrt @ intermediate_sqrt @ covsa_inv_sqrt
     return A_opt
 
-def get_ot_interventions_dict(top_heads, probes, tuning_activations, tuning_labels, best_th, num_heads, save_folder, alpha): 
+def get_ot_interventions_dict(top_heads, probes, tuning_activations, tuning_labels, best_th, num_heads, save_folder, alpha, template_intervened): 
     interventions = {}
     if not os.path.exists(save_folder):
         os.makedirs(save_folder)
         print(f"Created directory: {save_folder}")
-    for layer, head in top_heads: 
-        interventions[f"model.layers.{layer}.self_attn.o_proj"] = []
+    for layer, head in top_heads:
+        interventions[template_intervened.format(layer=layer)] = []
     # Analysis
     analysis_file = os.path.join(save_folder, f"check_{alpha}.csv")
     with open(analysis_file, mode="w") as file:
@@ -877,7 +910,7 @@ def get_ot_interventions_dict(top_heads, probes, tuning_activations, tuning_labe
             b_st = mu - (A_st @ mean_act).reshape(mu.shape)
             np.save(save_file_A, A_st)
             np.save(save_file_b, b_st)
-        interventions[f"model.layers.{layer}.self_attn.o_proj"].append((head, A_st, b_st, probes[layer_head_to_flattened_idx(layer, head, num_heads)], best_th))
+        interventions[template_intervened.format(layer=layer)].append((head, A_st, b_st, probes[layer_head_to_flattened_idx(layer, head, num_heads)], best_th))
         
         
         with open(analysis_file, 'a') as file:
@@ -886,5 +919,130 @@ def get_ot_interventions_dict(top_heads, probes, tuning_activations, tuning_labe
             writer.writerow([])
 
     for layer, head in top_heads: 
-        interventions[f"model.layers.{layer}.self_attn.o_proj"] = sorted(interventions[f"model.layers.{layer}.self_attn.o_proj"], key = lambda x: x[0])
+        interventions[template_intervened.format(layer=layer)] = sorted(interventions[template_intervened.format(layer=layer)], key = lambda x: x[0])
     return interventions
+
+def alt_completion_evaluate(models, metric_names, test_df, output_path, summary_path, device='cpu', interventions={}, intervention_fn=None, separate_kl_device=None, api=""): 
+    if os.path.exists(output_path):
+        test_df = pd.read_json(output_path, lines=True)
+
+    for mdl in models.keys(): 
+
+        # llama
+        if 'llama' in mdl or 'alpaca' in mdl or 'vicuna' in mdl or 'gemma' in mdl or 'gpt' in mdl:
+            assert models[mdl] is not None, 'must provide llama model'
+            llama_model = models[mdl]
+            llama_tokenizer = AutoTokenizer.from_pretrained(ENGINE_MAP[mdl])
+            test_df = completion_run_answers(test_df, model=llama_model, tokenizer=llama_tokenizer,
+                            device=device,
+                            interventions=interventions, intervention_fn=intervention_fn, output_path=output_path)
+            test_df.to_json(output_path, orient="records", lines=True)
+
+    for model_key in models.keys(): 
+        for metric in metric_names: 
+            if metric == "perspective":
+                API_KEY, client = initialize_client(api)
+                from multiprocessing import Pool
+                tmp_list = list(test_df.iterrows())
+                tmp_list_with_api_client = [
+                    (x[1], API_KEY, client, True) for x in tmp_list
+                ]
+                # processed_rows = [process_row_perspective_tup(args) for args in tmp_list_with_api_client]
+                # test_df = pd.DataFrame(processed_rows)
+                with Pool(8) as p:
+                    test_df = p.map(process_row_perspective_tup, tmp_list_with_api_client)
+                test_df = pd.DataFrame(test_df)
+
+                # save all
+                test_df.to_json(output_path, orient="records", lines=True)
+                if os.path.exists(summary_path):
+                    with open(summary_path, 'r') as f:
+                        res = json.load(f)
+                else:
+                    res = {}
+                pers_results = summary_pers(output_path)
+                res.update(pers_results)
+                with open(summary_path, 'w') as f:
+                    json.dump(res, f)
+                
+
+            if metric == "fluency_and_diversity":
+                fluency_and_diversity(output_path, summary_path)
+            
+            if metric == "ce":
+                ce_loss = run_ce_loss(model_key, model=llama_model, tokenizer=llama_tokenizer, device=device, interventions=interventions, intervention_fn=intervention_fn)
+                if os.path.exists(summary_path):
+                    with open(summary_path, 'r') as f:
+                        res = json.load(f)
+                else:
+                    res = {}
+                res["ce"] = ce_loss
+                with open(summary_path, 'w') as f:
+                    json.dump(res, f)
+
+            if metric == "kl":
+                kl_wrt_orig = run_kl_wrt_orig(model_key, model=llama_model, tokenizer=llama_tokenizer, device=device, interventions=interventions, intervention_fn=intervention_fn, separate_kl_device=separate_kl_device)
+                if os.path.exists(summary_path):
+                    with open(summary_path, 'r') as f:
+                        res = json.load(f)
+                else:
+                    res = {}
+                res["kl"] = kl_wrt_orig
+                with open(summary_path, 'w') as f:
+                    json.dump(res, f)
+    res = None
+    if os.path.exists(summary_path):
+        with open(summary_path, 'r') as f:
+            res = json.load(f)
+    return res
+
+
+def completion_run_answers(frame, model=None, tokenizer=None, device=None, interventions={}, intervention_fn=None, max_len=20, num_returns=25, output_path=None):
+    if "generations" not in frame.columns:
+        frame["generations"] = ""
+
+    tokens = []
+    masks = []
+    for idx in frame.index: 
+        prompt = frame.iloc[idx]['prompt']['text']
+        tmp = tokenizer(prompt, return_tensors='pt')   
+        input_ids = tmp.input_ids
+        masks.append(tmp.attention_mask)
+        tokens.append(input_ids)
+
+    # --- intervention code --- #
+    def id(head_output, layer_name): 
+        return head_output
+
+    if interventions == {}: 
+        intervene = id
+        layers_to_intervene = []
+    else: 
+        intervene = partial(intervention_fn, start_edit_location='lt')
+        layers_to_intervene = list(interventions.keys())
+    # --- intervention code --- #
+    
+    with torch.no_grad():
+        for idx, input_ids in enumerate(tqdm(tokens)): 
+            if frame.at[idx, "generations"] == "":
+                max_len_sentence = input_ids.shape[-1] + max_len
+                # --- intervention code --- #
+                mask = masks[idx]
+                with TraceDict(model, layers_to_intervene, edit_output=intervene) as ret: 
+                    input_ids = input_ids.to(device)
+                    mask = mask.to(device)
+
+                    model_gen_tokens_list = model.generate(input_ids, pad_token_id=model.config.eos_token_id, attention_mask=mask, top_p=0.9, top_k=0, do_sample=True, max_length=max_len_sentence, num_return_sequences=num_returns,)[:, input_ids.shape[-1]:]
+                generations = []
+                for gen in model_gen_tokens_list:
+                    generations.append({"text": tokenizer.decode(gen, skip_special_tokens=True)})
+
+                frame.at[idx, "generations"] = generations
+            if idx % 500 == 0:
+                frame.to_json(output_path, orient="records", lines=True)
+            # --- intervention code --- #
+
+    if device:
+        torch.cuda.empty_cache()
+
+    return frame
