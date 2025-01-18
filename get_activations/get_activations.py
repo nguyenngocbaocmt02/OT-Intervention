@@ -37,6 +37,8 @@ HF_NAMES = {
     'llama2_chat_13B_lofit_fold_1': 'meta-llama/Llama-2-13b-chat-hf',
     'llama3_8B_lofit_fold_0': 'meta-llama/Meta-Llama-3-8B',
     'llama3_8B_lofit_fold_1': 'meta-llama/Meta-Llama-3-8B',
+    'qwen_2.5_1.5B': 'qwen/qwen2.5-1.5B',
+    'qwen_2.5_1.5B-math': 'Qwen/Qwen2.5-Math-1.5B-Instruct',
 }
 ADAPTERS = {
     'llama_7B_lofit_fold_0': '/home/users/nus/binhnt/scratch/baonn/lofit/saved_model/llama2_7B_truthfulqa_42_fold_0',
@@ -172,7 +174,15 @@ def main():
             tmp = tmp[:, :re]
             prompts.append(tmp)
             labels.append(int(df_train.iloc[i]["toxic"]))
-
+    elif arg.train_dataset == 'prm800k_test':
+        dataset = load_dataset('json', '../data/prm800k_test.jsonl')
+        prompts = []
+        labels = []
+        selected_keys = ['problem', 'solution', 'answer']
+        for i in range(len(dataset)):
+            prompts.append(tokenizer('\n '.join(map(dataset[i].get, selected_keys)), return_tensors = 'pt').input_ids)
+            labels.append(dataset[i]['level'])
+ 
     all_layer_wise_activations = []
     all_head_wise_activations = []
 

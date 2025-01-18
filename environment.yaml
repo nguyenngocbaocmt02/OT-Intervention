@@ -215,7 +215,7 @@ dependencies:
     - contourpy==1.0.7
     - cycler==0.11.0
     - dacite==1.8.1
-    - datasets==2.12.0
+    - datasets==2.15.0
     - dill==0.3.6
     - dm-tree==0.1.8
     - einops==0.6.1
