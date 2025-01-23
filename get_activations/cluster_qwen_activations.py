@@ -10,7 +10,7 @@ from scipy.spatial.distance import cdist
 from typing import Callable, Union
 from tqdm import tqdm
 
-# Constants
+# constants
 HF_NAMES = {
     'qwen_2.5_1.5B': 'Qwen/Qwen2.5-1.5B',
     'qwen_2.5_1.5B-math': 'Qwen/Qwen2.5-Math-1.5B',
@@ -174,7 +174,7 @@ class MiniBatchKMedians(BaseEstimator, ClusterMixin, TransformerMixin):
                  n_clusters: int = 8, 
                  max_iter: int = 5, 
                  batch_size: int = 100,
-                 metric: Union[str, Callable] = 'manhattan',
+                 metric: Union[str, Callable] = 'euclidean',
                  max_no_improvement: int = 10, 
                  random_state: Union[int, np.random.RandomState, None] = None,
                  tol: float = 1e-4,
@@ -314,19 +314,17 @@ def sample_in_batches(mean, cov, total_samples, batch_size=5000):
 def plot_pca_2d_density_with_kmedoids(data, labels, medoid_indices, title, output_path=None, max_points=10000):
     """Plot with density plot or subsampling for large datasets."""
     pca = PCA(n_components=2)
-    reduced_data = pca.fit_transform(data)
     
-    plt.figure(figsize=(10, 8))
-    
-    # Subsample for plotting if data is too large
+    # Subsample for plotting and PCA calculation if data is too large
     if len(data) > max_points:
         idx = np.random.choice(len(data), max_points, replace=False)
-        plot_data = reduced_data[idx]
-        plt.scatter(plot_data[:, 0], plot_data[:, 1], c='lightblue', 
-                   label='Data Points (sampled)', alpha=0.1, s=1)
+        reduced_data = pca.fit_transform(data[idx])
     else:
-        plt.scatter(reduced_data[:, 0], reduced_data[:, 1], c='lightblue', 
-                   label='Data Points', alpha=0.7)
+        reduced_data = pca.fit_transform(data)
+        
+    plt.figure(figsize=(10, 8))
+    plt.scatter(reduced_data[:, 0], reduced_data[:, 1], c='lightblue',
+                label='Data Points', alpha=0.7)
 
     # Highlight medoids
     medoid_points = reduced_data[medoid_indices]
@@ -370,6 +368,39 @@ def plot_pca_2d_with_kmedoids(data, labels, medoid_indices, title, output_path=N
         plt.show()
 
 
+def plot_pca_2d_with_kmedians(data, labels, centers, title, max_points=10000, output_path=None):
+    """Perform PCA and plot the 2D projection with data and median centers."""
+    pca = PCA(n_components=2)
+    
+    # Subsample for plotting and PCA calculation if data is too large
+    if len(data) > max_points:
+        idx = np.random.choice(len(data), max_points, replace=False)
+        reduced_data = pca.fit_transform(data[idx])
+    else:
+        reduced_data = pca.fit_transform(data)
+    
+    # Transform the centers using the same PCA
+    reduced_centers = pca.transform(centers)
+
+    plt.figure(figsize=(8, 6))
+    # Plot all points
+    plt.scatter(reduced_data[:, 0], reduced_data[:, 1],
+                c='lightblue', label='Data Points', alpha=0.7)
+    # Plot centers
+    plt.scatter(reduced_centers[:, 0], reduced_centers[:, 1],
+                c='red', label='Cluster Centers', edgecolors='black', s=100)
+    plt.title(title)
+    plt.xlabel("Principal Component 1")
+    plt.ylabel("Principal Component 2")
+    plt.legend()
+
+    if output_path:
+        plt.savefig(f"{output_path}.png", dpi=300)  # Added dpi for better quality
+        plt.savefig(f"{output_path}.pdf")
+    else:
+        plt.show()
+
+
 # Load stuffs
 hidden_states_path = './features/prm800k_test'
 layer_idx = 15
@@ -396,7 +427,7 @@ mean_hidden_states = np.mean(qwen_hidden_states, axis=0)
 cov_hidden_states = np.cov(qwen_hidden_states, rowvar=False)
 
 # Sample 100k samples from the multivariate normal distribution
-num_samples = 100_000
+num_samples = 1_000_000
 print(f"Sampling {num_samples} points in batches...")
 sampled_hidden_states = sample_in_batches(
     mean_hidden_states, 
@@ -416,23 +447,32 @@ clustering = MiniBatchKMedoids(
 
 clustering.fit(sampled_hidden_states)
 
-# Using K-Medians
-# clustering = MiniBatchKMedians(
-#     n_clusters=num_clusters,
-#     metric='manhattan',
-#     batch_size=50000,
-#     random_state=42,
-#     verbose=True
-# )
-
-clustering.fit(sampled_hidden_states)
-
 # Plot PCA 2D of the dataset with medoids highlighted
 print("Plotting PCA 2D visualization with medoids highlighted...")
 plot_pca_2d_with_kmedoids(
     sampled_hidden_states,
-    minibatch_kmedoids.labels_,
-    minibatch_kmedoids.medoid_indices_,
+    clustering.labels_,
+    clustering.cluster_ids_,
     title=f"Minibatch K-Medoids Clusters with Medoids (Layer {layer_idx})",
     output_path=os.path.join(hidden_states_path, f"kmedoids_layer_{layer_idx}_pca")
+)
+
+# Using K-Medians
+clustering = MiniBatchKMedians(
+    n_clusters=num_clusters,
+    metric='euclidean',
+    batch_size=50000,
+    random_state=42,
+    verbose=True
+)
+
+clustering.fit(sampled_hidden_states)
+
+print("Plotting PCA 2D visualization with medians highlighted...")
+plot_pca_2d_with_kmedians(
+    sampled_hidden_states,
+    clustering.labels_,
+    clustering.cluster_centers,
+    title=f"Minibatch K-Median Clusters with Medoids (Layer {layer_idx})",
+    output_path=os.path.join(hidden_states_path, f"kmedians_layer_{layer_idx}_pca",
 )
