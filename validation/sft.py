@@ -190,7 +190,7 @@ def main():
         trainer = SFTTrainer(
             model,
             train_dataset=sft_data,
-            args=SFTConfig(output_dir="/big_storage/baonn/tmp", per_device_train_batch_size=4,
+            args=SFTConfig(output_dir="/big_storage/tmp", per_device_train_batch_size=4,
                             per_device_eval_batch_size=4),
             formatting_func=formatting_prompts_func,
             data_collator=collator,

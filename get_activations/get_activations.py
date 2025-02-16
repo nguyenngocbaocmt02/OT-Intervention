@@ -40,14 +40,6 @@ HF_NAMES = {
     'qwen_2.5_1.5B': 'qwen/qwen2.5-1.5B',
     'qwen_2.5_1.5B-math': 'Qwen/Qwen2.5-Math-1.5B-Instruct',
 }
-ADAPTERS = {
-    'llama_7B_lofit_fold_0': '/home/users/nus/binhnt/scratch/baonn/lofit/saved_model/llama2_7B_truthfulqa_42_fold_0',
-    'llama_7B_lofit_fold_1': '/home/users/nus/binhnt/scratch/baonn/lofit/saved_model/llama2_7B_truthfulqa_42_fold_1',
-    'llama2_chat_13B_lofit_fold_0': '/home/users/nus/binhnt/scratch/baonn/lofit/saved_model/llama2_13B_truthfulqa_42_fold_0',
-    'llama2_chat_13B_lofit_fold_1': '/home/users/nus/binhnt/scratch/baonn/lofit/saved_model/llama2_13B_truthfulqa_42_fold_1',
-    'llama3_8B_lofit_fold_0': '/home/users/nus/binhnt/scratch/baonn/lofit/saved_model/llama3_8B_truthfulqa_42_fold_0',
-    'llama3_8B_lofit_fold_1': '/home/users/nus/binhnt/scratch/baonn/lofit/saved_model/llama3_8B_truthfulqa_42_fold_1',
-}
 
 REPOS = {
     'nqopen' : "nqopen",

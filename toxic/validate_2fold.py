@@ -58,14 +58,6 @@ HF_NAMES = {
     'llama3_8B_lofit_fold_0': 'meta-llama/Meta-Llama-3-8B',
     'llama3_8B_lofit_fold_1': 'meta-llama/Meta-Llama-3-8B',
 }
-ADAPTERS = {
-    'llama_7B_lofit_fold_0': '/home/users/nus/binhnt/scratch/baonn/lofit/saved_model/llama2_7B_truthfulqa_42_fold_0',
-    'llama_7B_lofit_fold_1': '/home/users/nus/binhnt/scratch/baonn/lofit/saved_model/llama2_7B_truthfulqa_42_fold_1',
-    'llama2_chat_13B_lofit_fold_0': '/home/users/nus/binhnt/scratch/baonn/lofit/saved_model/llama2_13B_truthfulqa_42_fold_0',
-    'llama2_chat_13B_lofit_fold_1': '/home/users/nus/binhnt/scratch/baonn/lofit/saved_model/llama2_13B_truthfulqa_42_fold_1',
-    'llama3_8B_lofit_fold_0': '/home/users/nus/binhnt/scratch/baonn/lofit/saved_model/llama3_8B_truthfulqa_42_fold_0',
-    'llama3_8B_lofit_fold_1': '/home/users/nus/binhnt/scratch/baonn/lofit/saved_model/llama3_8B_truthfulqa_42_fold_1',
-}
 
 PATHs = {
     'toxic': "../Toxic/train.csv"
