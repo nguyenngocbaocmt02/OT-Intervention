@@ -14,7 +14,7 @@ import pickle
 import llama
 from transformers import AutoModelForCausalLM, AutoTokenizer, logging
 from lofit_models.modeling_llama import LlamaModel,LlamaForCausalLM
-from utils import (get_gemma_activations, get_llama_activations_bau, get_gpt_activations_bau,
+from utils import (get_gemma_activations, get_llama_activations_bau, get_gpt_activations_bau, get_moe_activations_bau,
                    tokenized_tqa, tokenized_tqa_gen, tokenized_tqa_gen_end_q)
 
 HF_NAMES = {
@@ -39,6 +39,9 @@ HF_NAMES = {
     'llama3_8B_lofit_fold_1': 'meta-llama/Meta-Llama-3-8B',
     'qwen_2.5_1.5B': 'qwen/qwen2.5-1.5B',
     'qwen_2.5_1.5B-math': 'Qwen/Qwen2.5-Math-1.5B-Instruct',
+    'moe': "allenai/OLMoE-1B-7B-0924",
+    "qwen": "Qwen/Qwen2-7B-Instruct",
+    "mistral": "mistralai/Mistral-7B-Instruct-v0.2",
 }
 
 REPOS = {
@@ -179,12 +182,15 @@ def main():
     all_head_wise_activations = []
 
     print("Getting activations")
-    for prompt in tqdm(prompts):
+    for i, prompt in tqdm(enumerate(prompts)):
         if 'gemma' in model_name_or_path.lower():
             layer_wise_activations, head_wise_activations, _ = get_gemma_activations(
                 model, prompt, device)
         if 'gpt' in model_name_or_path.lower():
             layer_wise_activations, head_wise_activations, _ = get_gpt_activations_bau(
+                model, prompt, device)
+        if 'moe' in model_name_or_path.lower():
+            layer_wise_activations, head_wise_activations, _ = get_moe_activations_bau(
                 model, prompt, device)
         else:
             layer_wise_activations, head_wise_activations, _ = get_llama_activations_bau(
@@ -192,7 +198,6 @@ def main():
         
         all_layer_wise_activations.append(layer_wise_activations[:,-1,:].copy())
         all_head_wise_activations.append(head_wise_activations[:,-1,:].copy())
-
     print("Saving labels")
     np.save(f'../features/{args.train_dataset}/{args.model_name}_{args.dataset_name}_labels.npy', labels)
 

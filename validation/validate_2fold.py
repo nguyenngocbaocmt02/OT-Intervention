@@ -57,6 +57,9 @@ HF_NAMES = {
     'llama2_chat_13B_lofit_fold_1': 'meta-llama/Llama-2-13b-chat-hf',
     'llama3_8B_lofit_fold_0': 'meta-llama/Meta-Llama-3-8B',
     'llama3_8B_lofit_fold_1': 'meta-llama/Meta-Llama-3-8B',
+    'moe': "allenai/OLMoE-1B-7B-0924",
+    "qwen": "Qwen/Qwen2-7B-Instruct",
+    "mistral": "mistralai/Mistral-7B-Instruct-v0.2",
 }
 
 PATHs = {

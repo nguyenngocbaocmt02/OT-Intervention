@@ -52,6 +52,8 @@ ENGINE_MAP = {
     'llama2_chat_13B_lofit_fold_1': 'meta-llama/Llama-2-13b-chat-hf',
     'llama3_8B_lofit_fold_0': 'meta-llama/Meta-Llama-3-8B',
     'llama3_8B_lofit_fold_1': 'meta-llama/Meta-Llama-3-8B',
+    'qwen': 'Qwen/Qwen2-7B-Instruct',
+    "mistral": "mistralai/Mistral-7B-Instruct-v0.2",
 }
 
 from truthfulqa.evaluate import data_to_dict, format_frame
@@ -183,6 +185,25 @@ def get_llama_activations_bau(model, prompt, device):
         mlp_wise_hidden_states = torch.stack(mlp_wise_hidden_states, dim = 0).squeeze().float().numpy()
 
     return hidden_states, head_wise_hidden_states, mlp_wise_hidden_states
+
+def get_moe_activations_bau(model, prompt, device):
+    HEADS = [f"model.layers.{i}.self_attn.o_proj" for i in range(model.config.num_hidden_layers)]
+    MLPS = [f"model.layers.{i}.mlp" for i in range(model.config.num_hidden_layers)]
+
+    with torch.no_grad():
+        prompt = prompt.to(device)
+        with TraceDict(model, HEADS+MLPS) as ret:
+            output = model(prompt, output_hidden_states = True)
+        hidden_states = output.hidden_states
+        hidden_states = torch.stack(hidden_states, dim = 0).squeeze()
+        try:
+            hidden_states = hidden_states.detach().cpu().numpy()
+        except:
+            hidden_states = hidden_states.detach().float().cpu().numpy()
+        head_wise_hidden_states = [ret[head].output.squeeze().detach().cpu() for head in HEADS]
+        head_wise_hidden_states = torch.stack(head_wise_hidden_states, dim = 0).squeeze().float().numpy()
+
+    return hidden_states, head_wise_hidden_states, None
 
 def get_gpt_activations_bau(model, prompt, device):
     HEADS = [f"transformer.h.{i}.attn.c_proj" for i in range(model.config.num_hidden_layers)]
@@ -598,7 +619,7 @@ def alt_tqa_evaluate(models, metric_names, input_path, output_path, summary_path
             #     print(err)
 
         # llama
-        if 'llama' in mdl or 'alpaca' in mdl or 'vicuna' in mdl or 'gemma' in mdl or 'gpt' in mdl:
+        if 'llama' in mdl or 'alpaca' in mdl or 'vicuna' in mdl or 'gemma' in mdl or 'gpt' in mdl or "qwen" in mdl or "mistral" in mdl:
             assert models[mdl] is not None, 'must provide llama model'
             llama_model = models[mdl]
             llama_tokenizer = AutoTokenizer.from_pretrained(ENGINE_MAP[mdl])

@@ -1,8 +1,10 @@
 MODEL=llama_7B
-JUDGE=ft:davinci-002:ethicalytics:truthful:A0WsrZ0l # TruthfulQA
+#JUDGE=ft:davinci-002:ethicalytics:truthful:A0WsrZ0l # TruthfulQA
 #JUDGE=ft:davinci-002:ethicalytics::9t5UpZFx  ## NQOpen
 #JUDGE=ft:davinci-002:ethicalytics::9t6np2Pi  ## TRivia
-INFO=ft:davinci-002:ethicalytics:informative:A0WuCDTp
+#INFO=ft:davinci-002:ethicalytics:informative:A0WuCDTp
+JUDGE=gpt-4o
+INFO=gpt-4o
 LOG_FILE="sweep_output.log"
 EVAL_DATASET="truthful_qa"
 TRAIN_DATASET="truthful_qa"
@@ -13,12 +15,22 @@ TRAIN_DATASET="truthful_qa"
 #################   ITI    #######################
 ##################################################
 #TEST
+for MODEL in mistral; do
+    for alpha in 0; do
+        for K in 0; do
+            echo "model: $MODEL alpha: $alpha K: $K"
+            CUDA_VISIBLE_DEVICES=0 python validate_2fold.py --model_name $MODEL --use_mode test --num_heads $K --alpha_ot $alpha --device 0 --num_fold 2 --use_center_of_mass --judge_name $JUDGE --info_name $INFO --eval_dataset $EVAL_DATASET --train_dataset $TRAIN_DATASET
+            echo
+            echo
+        done
+    done
+done
 
-for MODEL in gpt2_large; do
+for MODEL in mistral; do
     for alpha in 15; do
         for K in 48; do
             echo "model: $MODEL alpha: $alpha K: $K"
-            CUDA_VISIBLE_DEVICES=2 python validate_2fold.py --prompting 20 --model_name $MODEL --use_mode test --num_heads $K --alpha_ot $alpha --device 0 --num_fold 2 --use_center_of_mass --judge_name $JUDGE --info_name $INFO --eval_dataset $EVAL_DATASET --train_dataset $TRAIN_DATASET
+            CUDA_VISIBLE_DEVICES=0 python validate_2fold.py --model_name $MODEL --use_mode test --num_heads $K --alpha_ot $alpha --device 0 --num_fold 2 --use_center_of_mass --judge_name $JUDGE --info_name $INFO --eval_dataset $EVAL_DATASET --train_dataset $TRAIN_DATASET
             echo
             echo
         done
