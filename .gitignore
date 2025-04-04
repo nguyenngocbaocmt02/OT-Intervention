@@ -13,6 +13,7 @@ develop-eggs/
 dist/
 downloads/
 eggs/
+*/pth
 .eggs/
 lib/
 lib64/
@@ -169,3 +170,4 @@ validation/splits
 validation/sweeping/logs
 get_activations/logs
 validation/debug_model_architecture.ipynb
+*/pth
