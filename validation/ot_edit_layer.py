@@ -186,13 +186,15 @@ def main():
     model_name_or_path = HF_NAMES[args.model_name]
     tokenizer = AutoTokenizer.from_pretrained(model_name_or_path, trust_remote_code=True)
 
-    if 'gemma' in model_name_or_path.lower():
+    if 'gemma' in model_name_or_path.lower() or "gpt" in model_name_or_path.lower():
         model = AutoModelForCausalLM.from_pretrained(
             model_name_or_path,
             low_cpu_mem_usage=True,
             torch_dtype=torch.float16,
             device_map="auto",
         )
+    elif 'qwen' in model_name_or_path.lower():
+        model = AutoModelForCausalLM.from_pretrained(model_name_or_path, low_cpu_mem_usage=True, device_map="auto", torch_dtype=torch.bfloat16, trust_remote_code=True)
     elif 'lofit' in args.model_name.lower():
         if '13b' in args.model_name.lower():
             torch_dtype = torch.bfloat16
@@ -226,7 +228,7 @@ def main():
     num_layers = model.config.num_hidden_layers
     num_heads = model.config.num_attention_heads
 
-    # load activations 
+        # load activations 
     head_wise_activations = np.load(f"../features/{args.train_dataset}/{args.model_name}_{args.dataset_name}_head_wise.npy")
     labels = np.load(f"../features/{args.train_dataset}/{args.model_name}_{args.dataset_name}_labels.npy")
     head_wise_activations = rearrange(head_wise_activations, 'b l (h d) -> b l h d', h = num_heads)
@@ -234,8 +236,8 @@ def main():
     # tuning dataset: no labels used, just to get std of activations along the direction
     activations_dataset = args.dataset_name if args.activations_dataset is None else args.activations_dataset
     tuning_activations = np.load(f"../features/{args.train_dataset}/{args.model_name}_{activations_dataset}_head_wise.npy")
-    tuning_activations = rearrange(tuning_activations, 'b l (h d) -> b l h d', h = num_heads)
     tuning_labels = np.load(f"../features/{args.train_dataset}/{args.model_name}_{activations_dataset}_labels.npy")
+    tuning_activations = rearrange(tuning_activations, 'b l (h d) -> b l h d', h = num_heads)
 
     separated_head_wise_activations, separated_labels, idxs_to_split_at = get_separated_activations(labels, head_wise_activations)
 
@@ -531,7 +533,7 @@ def main():
                     interventions=interventions, 
                     intervention_fn=lt_modulated_vector_add, 
                     instruction_prompt=args.instruction_prompt,
-                    judge_name="ft:davinci-002:ethicalytics:truthful:A0WsrZ0l", 
+                    judge_name="gpt-4", 
                     info_name=args.info_name,
                     many_shot_prefix=many_shot_prefix
                 )

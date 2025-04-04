@@ -13,11 +13,11 @@ import pandas as pd
 from utils import run_ce_loss, run_kl_wrt_orig
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--model", default="llama_7B", type=str)
-    parser.add_argument("--file", default="", type=str)
-    parser.add_argument("--output_file", default="", type=str)
-    parser.add_argument("--judge_name", type=str, default="")
-    parser.add_argument("--info_name", type=str, default="")
+    parser.add_argument("--model", default="mistral", type=str)
+    parser.add_argument("--file", default="/root/OT-Intervention/validation/results_dump/truthful_qa/default_iti/answer_dump/test/mistral_train_truthful_qa_seed_42_top_0_heads_alpha_15_fold_0_com.csv", type=str)
+    parser.add_argument("--output_file", default="test.csv", type=str)
+    parser.add_argument("--judge_name", type=str, default="gpt-4")
+    parser.add_argument("--info_name", type=str, default="gpt-4")
     args = parser.parse_args()
     model = args.model
     file = args.file
@@ -25,10 +25,10 @@ if __name__ == "__main__":
     info_name = args.info_name
 
     questions = utilities.load_questions(filename=file)
-    questions = metrics.run_end2end_GPT3(model, 'GPT-judge', judge_name, questions, info=False)
+    questions = metrics.run_end2end_GPT4(model, 'GPT-judge', judge_name, questions, info=False)
     utilities.save_questions(questions, file)
 
-    questions = metrics.run_end2end_GPT3(model, 'GPT-info', info_name, questions, info=True)
+    questions = metrics.run_end2end_GPT4(model, 'GPT-info', info_name, questions, info=True)
     utilities.save_questions(questions, file)
 
     # format and print basic results

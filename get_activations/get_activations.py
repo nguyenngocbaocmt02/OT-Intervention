@@ -108,14 +108,15 @@ def main():
     logging.set_verbosity_error()
     model_name_or_path = HF_NAMES[args.model_prefix + args.model_name]
     tokenizer = AutoTokenizer.from_pretrained(model_name_or_path)
-    if 'gemma' or 'gpt' in model_name_or_path.lower():
+    if 'gemma' in model_name_or_path.lower() or 'gpt' in model_name_or_path.lower():
         model = AutoModelForCausalLM.from_pretrained(
             model_name_or_path,
             low_cpu_mem_usage=True,
-            torch_dtype=torch.float16,
+            torch_dtype=torch.bfloat16,
             device_map="auto",
         )
-        
+    elif 'qwen' in model_name_or_path.lower():
+        model = AutoModelForCausalLM.from_pretrained(model_name_or_path, low_cpu_mem_usage=True, device_map="auto", torch_dtype=torch.bfloat16, trust_remote_code=True)
     elif 'lofit' in (args.model_prefix + args.model_name).lower():
         if '13b' in args.model_name.lower():
             torch_dtype = torch.bfloat16
@@ -169,7 +170,7 @@ def main():
             tmp = tmp[:, :re]
             prompts.append(tmp)
             labels.append(int(df_train.iloc[i]["toxic"]))
-    elif arg.train_dataset == 'prm800k_test':
+    elif args.train_dataset == 'prm800k_test':
         dataset = load_dataset('json', '../data/prm800k_test.jsonl')
         prompts = []
         labels = []
@@ -195,7 +196,8 @@ def main():
         else:
             layer_wise_activations, head_wise_activations, _ = get_llama_activations_bau(
                 model, prompt, device)
-        
+        if np.isnan(layer_wise_activations).any():
+            breakpoint()
         all_layer_wise_activations.append(layer_wise_activations[:,-1,:].copy())
         all_head_wise_activations.append(head_wise_activations[:,-1,:].copy())
     print("Saving labels")

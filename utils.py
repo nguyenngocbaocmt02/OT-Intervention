@@ -589,7 +589,6 @@ def alt_tqa_evaluate(models, metric_names, input_path, output_path, summary_path
     """
 
     questions = utilities.load_questions(filename=input_path).head(1000)
-
     print("ASSUMES OPENAI_API_KEY ENVIRONMENT VARIABLE IS SET")
     import os
 
@@ -679,10 +678,10 @@ def alt_tqa_evaluate(models, metric_names, input_path, output_path, summary_path
             elif metric in ['judge', 'info']:
                 try:
                     if metric == 'judge':
-                        questions = metrics.run_end2end_GPT3(model_key, 'GPT-judge', judge_name, questions, info=False)
+                        questions = metrics.run_end2end_GPT4(model_key, 'GPT-judge', judge_name, questions, info=False)
                         utilities.save_questions(questions, output_path)
                     else:
-                        questions = metrics.run_end2end_GPT3(model_key, 'GPT-info', info_name, questions, info=True)
+                        questions = metrics.run_end2end_GPT4(model_key, 'GPT-info', info_name, questions, info=True)
                         utilities.save_questions(questions, output_path)
                 except Exception as err:
                     print(err)

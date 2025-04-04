@@ -150,13 +150,15 @@ def main():
     # create model
     model_name_or_path = HF_NAMES[args.model_prefix + args.model_name]
     tokenizer = AutoTokenizer.from_pretrained(model_name_or_path, trust_remote_code=True)
-    if 'gemma' in model_name_or_path.lower():
+    if 'gemma' in model_name_or_path.lower() or "gpt" in model_name_or_path.lower():
         model = AutoModelForCausalLM.from_pretrained(
             model_name_or_path,
             low_cpu_mem_usage=True,
             torch_dtype=torch.float16,
             device_map="auto",
         )
+    elif 'qwen' in model_name_or_path.lower():
+        model = AutoModelForCausalLM.from_pretrained(model_name_or_path, low_cpu_mem_usage=True, device_map="auto", torch_dtype=torch.bfloat16, trust_remote_code=True)
     elif 'lofit' in (args.model_prefix + args.model_name).lower():
         if '13b' in args.model_name.lower():
             torch_dtype = torch.bfloat16
@@ -193,10 +195,12 @@ def main():
     # tuning dataset: no labels used, just to get std of activations along the direction
     activations_dataset = args.dataset_name if args.activations_dataset is None else args.activations_dataset
     tuning_activations = np.load(f"../features/{args.train_dataset}/{args.model_name}_{activations_dataset}_head_wise.npy")
-    tuning_activations = rearrange(tuning_activations, 'b l (h d) -> b l h d', h = num_heads)
     tuning_labels = np.load(f"../features/{args.train_dataset}/{args.model_name}_{activations_dataset}_labels.npy")
-
+    tuning_activations = rearrange(tuning_activations, 'b l (h d) -> b l h d', h = num_heads)
+    
+    
     separated_head_wise_activations, separated_labels, idxs_to_split_at = get_separated_activations(labels, head_wise_activations)
+
     # run k-fold cross validation
     results = []
     for i in range(args.num_fold):
