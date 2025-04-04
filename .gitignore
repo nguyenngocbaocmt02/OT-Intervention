@@ -171,3 +171,4 @@ validation/sweeping/logs
 get_activations/logs
 validation/debug_model_architecture.ipynb
 */pth
+**/*.pth
